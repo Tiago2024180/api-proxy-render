@@ -53,6 +53,17 @@ Como usar o CI
 - Faz commit e push destas alterações para o branch `main` (ou `master`) ou dispara manualmente o workflow na aba Actions do GitHub.
 - O workflow dará feedback nos logs e guardará `server.log` como artefacto para download.
 
+Atualização de datasets (Hugging Face)
+- Scripts:
+	- `backend-render/scripts/update_dataset.js`: busca a lista de breaches do HIBP e grava em `backend-render/datasets`.
+	- `backend-render/scripts/upload_to_hf.py`: usa `huggingface_hub` para enviar o ficheiro `latest.json` para o repositório HF configurado.
+
+- Workflow GitHub Actions: `.github/workflows/update-dataset.yml` executa diariamente (ou manualmente) para gerar o dataset e, se definidos, faz upload para HF usando os secrets `HF_TOKEN` e `HF_REPO`.
+
+Configuração:
+- Na página do repositório no GitHub, adicione os secrets `HIBP_API_KEY` (necessário), `HF_TOKEN` e `HF_REPO` (opcionais) em Settings → Secrets → Actions.
+
+
 # (2) Commit & push
 cd ..
 .\deploy-to-render.ps1 -Message "chore: deploy backend-render updates"

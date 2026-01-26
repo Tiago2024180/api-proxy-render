@@ -1,0 +1,42 @@
+name: Deploy Frontend to Vercel and Test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Serve frontend and test
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Start simple HTTP server
+        working-directory: frontend
+        run: |
+          python -m http.server 8000 &
+          sleep 1
+          curl -sSf http://localhost:8000/index.html | grep -q "Teste HIBP Proxy" || (sleep 5 && curl -v http://localhost:8000/index.html)
+
+  deploy-to-vercel:
+    needs: test-frontend
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v20
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: frontend
+          prod: true

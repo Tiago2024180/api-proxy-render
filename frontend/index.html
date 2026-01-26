@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HIBP Proxy Test</title>
+  <style>body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:2rem}</style>
+</head>
+<body>
+  <h1>Teste HIBP Proxy</h1>
+  <p>Insere um email e verifica se tem breaches (usa o backend no Render).</p>
+
+  <input id="email" type="email" placeholder="nome@exemplo.com" style="width:300px" />
+  <button id="check">Verificar</button>
+
+  <pre id="result" style="white-space:pre-wrap;margin-top:1rem;background:#f7f7f7;padding:1rem;border-radius:6px"></pre>
+
+  <script>
+    const base = 'https://backend-proxy-s43a.onrender.com';
+    document.getElementById('check').addEventListener('click', async () => {
+      const email = document.getElementById('email').value.trim();
+      if (!email) return alert('Introduz um email');
+      const out = document.getElementById('result');
+      out.textContent = 'A carregar...';
+      try {
+        const res = await fetch(`${base}/api/hibp/check/${encodeURIComponent(email)}`);
+        const data = await res.json();
+        out.textContent = JSON.stringify({ status: res.status, data }, null, 2);
+      } catch (e) {
+        out.textContent = 'Erro: ' + e.message;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+name: Update Dataset
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *' # daily at 02:00 UTC
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install backend deps
+        working-directory: backend-render
+        run: npm install
+
+      - name: Run dataset updater
+        working-directory: backend-render
+        env:
+          HIBP_API_KEY: ${{ secrets.HIBP_API_KEY }}
+        run: node scripts/update_dataset.js
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install hf dependencies
+        run: pip install huggingface_hub
+
+      - name: Upload to Hugging Face (optional)
+        working-directory: backend-render
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ secrets.HF_REPO }}
+        run: |
+          if [ -n "${HF_TOKEN}" ] && [ -n "${HF_REPO}" ]; then
+            python3 scripts/upload_to_hf.py
+          else
+            echo "HF_TOKEN or HF_REPO not set — skipping upload"
+          fi
+
+      - name: Upload dataset artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: datasets
+          path: backend-render/datasets
