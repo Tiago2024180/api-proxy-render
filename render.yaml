@@ -1,0 +1,17 @@
+# Example Render service configuration for the backend
+services:
+  - type: web
+    name: leak-backend
+    env: node
+    plan: free
+    region: oregon
+    root: backend-render
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: HIBP_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: HF_REPO
+        sync: false
