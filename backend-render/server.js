@@ -17,8 +17,19 @@ const PORT = process.env.PORT || 3000;
 const HIBP_API_KEY = process.env.HIBP_API_KEY;
 
 // Middleware
+// CORS: allow requests from FRONTEND_URL (can be comma-separated list). Falls back to allow all when not set (dev).
+const frontendEnv = process.env.FRONTEND_URL || '';
+const allowedOrigins = frontendEnv ? frontendEnv.split(',').map(s => s.trim()).filter(Boolean) : ['*'];
+
 app.use(cors({
-    origin: '*', // Em produção, restringir ao domínio do Vercel
+    origin: function(origin, callback) {
+        // allow non-browser requests (e.g., curl, server-to-server) when origin is undefined
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type', 'Accept']
 }));
