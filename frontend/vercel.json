@@ -4,12 +4,13 @@
     {
       "source": "/api/(.*)",
       "destination": "https://backend-proxy-s43a.onrender.com/api/$1"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ],
   "builds": [
     { "src": "index.html", "use": "@vercel/static" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
