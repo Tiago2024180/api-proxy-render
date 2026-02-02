@@ -15,6 +15,10 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Behind Render/Cloudflare (and optionally Vercel rewrite), we need to trust proxy headers
+// so req.ip reflects the real client rather than the edge proxy.
+app.set('trust proxy', 1);
+
 let APP_VERSION = 'unknown';
 try {
     // Keep version in sync with package.json for easier deploy verification.
@@ -47,10 +51,41 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Return JSON on malformed bodies instead of an HTML error.
+app.use((err, req, res, next) => {
+    if (err && err.type === 'entity.parse.failed') {
+        return res.status(400).json({ error: 'Invalid JSON body' });
+    }
+    return next(err);
+});
+
 // Rate limiting simples (em produção usar redis)
 const requestCounts = new Map();
-const RATE_LIMIT = 10; // requests por minuto por IP
+const RATE_LIMIT = 60; // requests por minuto por IP
 const RATE_WINDOW = 60000; // 1 minuto
+
+function getClientIP(req) {
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) {
+        // format: client, proxy1, proxy2
+        return xff.split(',')[0].trim();
+    }
+    return req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...(options || {}), signal: controller.signal });
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function checkRateLimit(ip) {
     const now = Date.now();
@@ -128,7 +163,7 @@ function normalizeDomainOrUrl(input) {
 // Endpoint: Check if a domain/URL appears in known breaches (HIBP /breaches?domain=...)
 app.get('/api/hibp/domain/:domainOrUrl', async (req, res) => {
     const { domainOrUrl } = req.params;
-    const clientIP = req.ip || req.connection.remoteAddress;
+    const clientIP = getClientIP(req);
 
     const domain = normalizeDomainOrUrl(domainOrUrl);
     console.log(`[Request] Check domain: ${domainOrUrl} (normalized: ${domain}) from ${clientIP}`);
@@ -197,7 +232,7 @@ app.get('/api/hibp/domain/:domainOrUrl', async (req, res) => {
 // Accepts JSON: { "sha1": "<40 hex>" } OR { "password": "..." }
 // Prefer sending sha1 from the client to avoid sending plaintext passwords.
 app.post('/api/hibp/password', async (req, res) => {
-    const clientIP = req.ip || req.connection.remoteAddress;
+    const clientIP = getClientIP(req);
 
     if (!checkRateLimit(clientIP)) {
         console.log(`[RateLimit] Blocked ${clientIP}`);
@@ -228,13 +263,29 @@ app.post('/api/hibp/password', async (req, res) => {
 
     try {
         const url = `https://api.pwnedpasswords.com/range/${prefix}`;
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'user-agent': 'DataBreachChecker-Backend/1.0',
-                'add-padding': 'true'
+        // Upstream can occasionally hiccup; do a couple of quick retries with a timeout.
+        let response = null;
+        let lastErr = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                response = await fetchWithTimeout(url, {
+                    method: 'GET',
+                    headers: {
+                        'user-agent': 'DataBreachChecker-Backend/1.0',
+                        'add-padding': 'true'
+                    }
+                }, 10000);
+                lastErr = null;
+                break;
+            } catch (e) {
+                lastErr = e;
+                if (attempt < 3) await sleep(300 * attempt);
             }
-        });
+        }
+
+        if (!response && lastErr) {
+            return res.status(502).json({ error: 'Erro ao contactar Pwned Passwords', details: lastErr.message });
+        }
 
         if (!response.ok) {
             const errorText = await response.text();
@@ -262,7 +313,7 @@ app.post('/api/hibp/password', async (req, res) => {
 // Endpoint principal: Verificar email por vazamentos
 app.get('/api/hibp/check/:email', async (req, res) => {
     const { email } = req.params;
-    const clientIP = req.ip || req.connection.remoteAddress;
+    const clientIP = getClientIP(req);
     
     console.log(`[Request] Check email: ${email} from ${clientIP}`);
     
