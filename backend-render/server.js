@@ -14,7 +14,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // API Key do Have I Been Pwned (configurar como variável de ambiente no Render!)
-const HIBP_API_KEY = process.env.HIBP_API_KEY;
+// Accept both names to avoid env-var mismatch between environments.
+const HIBP_API_KEY = process.env.HIBP_API_KEY || process.env.HIBP_KEY;
 
 // Middleware
 // CORS: allow requests from FRONTEND_URL (can be comma-separated list). Falls back to allow all when not set (dev).
