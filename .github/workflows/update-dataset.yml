@@ -21,10 +21,19 @@ jobs:
         working-directory: backend-render
         run: npm install
 
+      - name: Validate HIBP secret
+        env:
+          HIBP_SECRET: ${{ secrets.HIBP_API_KEY || secrets.HIBP_KEY }}
+        run: |
+          if [ -z "${HIBP_SECRET}" ]; then
+            echo "Missing GitHub secret: HIBP_API_KEY (recommended) or HIBP_KEY"
+            exit 1
+          fi
+
       - name: Run dataset updater
         working-directory: backend-render
         env:
-          HIBP_API_KEY: ${{ secrets.HIBP_API_KEY }}
+          HIBP_API_KEY: ${{ secrets.HIBP_API_KEY || secrets.HIBP_KEY }}
         run: node scripts/update_dataset.js
 
       - name: Setup Python
