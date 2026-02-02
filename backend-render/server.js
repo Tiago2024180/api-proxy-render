@@ -10,9 +10,19 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const crypto = require('crypto');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+let APP_VERSION = 'unknown';
+try {
+    // Keep version in sync with package.json for easier deploy verification.
+    // eslint-disable-next-line global-require, import/no-dynamic-require
+    APP_VERSION = require(path.join(__dirname, 'package.json')).version || 'unknown';
+} catch {
+    APP_VERSION = 'unknown';
+}
 
 // API Key do Have I Been Pwned (configurar como variável de ambiente no Render!)
 // Accept both names to avoid env-var mismatch between environments.
@@ -84,7 +94,7 @@ app.get('/', (req, res) => {
     res.json({
         status: 'online',
         service: 'HIBP Proxy Backend',
-        version: '1.0.0',
+        version: APP_VERSION,
         endpoints: {
             healthCheck: 'GET /',
             checkEmail: 'GET /api/hibp/check/:email',
