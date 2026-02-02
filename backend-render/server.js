@@ -3,12 +3,13 @@
  * Deploy no Render.com
  * 
  * IMPORTANTE: Configure a variável de ambiente no Render:
- * HIBP_API_KEY = 1d416ab2ce0f461fa9ae0902a39ba1d7
+ * HIBP_API_KEY (Nunca faça commit/partilha da chave em repositórios ou chats.)
  */
 
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -87,10 +88,165 @@ app.get('/', (req, res) => {
         endpoints: {
             healthCheck: 'GET /',
             checkEmail: 'GET /api/hibp/check/:email',
-            getBreaches: 'GET /api/hibp/breaches'
+            getBreaches: 'GET /api/hibp/breaches',
+            checkDomain: 'GET /api/hibp/domain/:domainOrUrl',
+            checkPassword: 'POST /api/hibp/password'
         },
         apiKeyConfigured: !!HIBP_API_KEY
     });
+});
+
+function normalizeDomainOrUrl(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return null;
+    // If it looks like a URL, extract hostname.
+    if (raw.includes('://')) {
+        try {
+            const u = new URL(raw);
+            return u.hostname;
+        } catch {
+            return null;
+        }
+    }
+    // Otherwise treat as domain.
+    const cleaned = raw.replace(/^\s+|\s+$/g, '').toLowerCase();
+    // very basic sanity check
+    if (cleaned.includes('/') || cleaned.includes(' ')) return null;
+    return cleaned;
+}
+
+// Endpoint: Check if a domain/URL appears in known breaches (HIBP /breaches?domain=...)
+app.get('/api/hibp/domain/:domainOrUrl', async (req, res) => {
+    const { domainOrUrl } = req.params;
+    const clientIP = req.ip || req.connection.remoteAddress;
+
+    const domain = normalizeDomainOrUrl(domainOrUrl);
+    console.log(`[Request] Check domain: ${domainOrUrl} (normalized: ${domain}) from ${clientIP}`);
+
+    if (!domain) {
+        return res.status(400).json({ error: 'Domínio/URL inválido' });
+    }
+
+    if (!checkRateLimit(clientIP)) {
+        console.log(`[RateLimit] Blocked ${clientIP}`);
+        return res.status(429).json({ error: 'Muitas requisições. Tente novamente em 1 minuto.' });
+    }
+
+    if (!HIBP_API_KEY) {
+        return res.status(500).json({ error: 'API Key não configurada no servidor' });
+    }
+
+    const cacheKey = `domain:${domain}`;
+    const cachedResult = getCached(cacheKey);
+    if (cachedResult !== null) {
+        return res.status(cachedResult.status).json(cachedResult.data);
+    }
+
+    try {
+        const hibpUrl = `https://haveibeenpwned.com/api/v3/breaches?domain=${encodeURIComponent(domain)}`;
+        const response = await fetch(hibpUrl, {
+            method: 'GET',
+            headers: {
+                'hibp-api-key': HIBP_API_KEY,
+                'user-agent': 'DataBreachChecker-Backend/1.0',
+                'Accept': 'application/json'
+            }
+        });
+
+        if (response.status === 404) {
+            setCache(cacheKey, { status: 200, data: [] });
+            return res.json([]);
+        }
+
+        if (response.status === 429) {
+            const retryAfter = response.headers.get('retry-after') || 2;
+            return res.status(429).json({
+                error: 'Rate limit da API HIBP excedido',
+                retryAfter: parseInt(retryAfter)
+            });
+        }
+
+        if (response.status === 401) {
+            return res.status(401).json({ error: 'API Key inválida' });
+        }
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            return res.status(response.status).json({ error: errorText });
+        }
+
+        const breaches = await response.json();
+        setCache(cacheKey, { status: 200, data: breaches });
+        return res.json(breaches);
+    } catch (error) {
+        return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
+    }
+});
+
+// Endpoint: Check password using HIBP Pwned Passwords (k-anonymity range API)
+// Accepts JSON: { "sha1": "<40 hex>" } OR { "password": "..." }
+// Prefer sending sha1 from the client to avoid sending plaintext passwords.
+app.post('/api/hibp/password', async (req, res) => {
+    const clientIP = req.ip || req.connection.remoteAddress;
+
+    if (!checkRateLimit(clientIP)) {
+        console.log(`[RateLimit] Blocked ${clientIP}`);
+        return res.status(429).json({ error: 'Muitas requisições. Tente novamente em 1 minuto.' });
+    }
+
+    const body = req.body || {};
+    let sha1 = (body.sha1 || '').toString().trim();
+
+    if (!sha1 && typeof body.password === 'string') {
+        // Compute SHA-1 on server only as fallback.
+        sha1 = crypto.createHash('sha1').update(body.password, 'utf8').digest('hex');
+    }
+
+    sha1 = sha1.toUpperCase();
+    if (!/^[A-F0-9]{40}$/.test(sha1)) {
+        return res.status(400).json({ error: 'sha1 inválido (esperado 40 chars hex) ou password em falta' });
+    }
+
+    const cacheKey = `pw:${sha1}`;
+    const cachedResult = getCached(cacheKey);
+    if (cachedResult !== null) {
+        return res.status(cachedResult.status).json(cachedResult.data);
+    }
+
+    const prefix = sha1.slice(0, 5);
+    const suffix = sha1.slice(5);
+
+    try {
+        const url = `https://api.pwnedpasswords.com/range/${prefix}`;
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'user-agent': 'DataBreachChecker-Backend/1.0',
+                'add-padding': 'true'
+            }
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            return res.status(response.status).json({ error: errorText || 'Erro ao consultar Pwned Passwords' });
+        }
+
+        const text = await response.text();
+        let count = 0;
+        for (const line of text.split(/\r?\n/)) {
+            const [hashSuffix, c] = line.split(':');
+            if (hashSuffix && hashSuffix.toUpperCase() === suffix) {
+                count = parseInt((c || '0').trim(), 10) || 0;
+                break;
+            }
+        }
+
+        const payload = { pwned: count > 0, count };
+        setCache(cacheKey, { status: 200, data: payload });
+        return res.json(payload);
+    } catch (error) {
+        return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
+    }
 });
 
 // Endpoint principal: Verificar email por vazamentos

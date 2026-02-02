@@ -11,6 +11,24 @@ if (!HIBP_API_KEY) {
 const outDir = path.join(__dirname, '..', 'datasets');
 if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
+function readJsonIfExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function indexByName(breaches) {
+  const m = new Map();
+  if (!Array.isArray(breaches)) return m;
+  for (const b of breaches) {
+    if (b && typeof b.Name === 'string') m.set(b.Name, b);
+  }
+  return m;
+}
+
 async function fetchBreaches() {
   const url = 'https://haveibeenpwned.com/api/v3/breaches';
   console.log('Fetching breaches from HIBP...');
@@ -24,12 +42,44 @@ async function fetchBreaches() {
 
 async function run() {
   try {
+    const prevPath = path.join(outDir, 'breaches-latest.json');
+    const prevBreaches = readJsonIfExists(prevPath) || [];
+
     const breaches = await fetchBreaches();
     const now = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `breaches-${now}.json`;
     const filepath = path.join(outDir, filename);
     fs.writeFileSync(filepath, JSON.stringify(breaches, null, 2));
-    fs.writeFileSync(path.join(outDir, 'latest.json'), JSON.stringify({ generated_at: new Date().toISOString(), file: filename }, null, 2));
+
+    // Stable "latest" dataset file for diffing / consumers
+    fs.writeFileSync(prevPath, JSON.stringify(breaches, null, 2));
+
+    // Compute newly added breaches since previous snapshot
+    const prevIndex = indexByName(prevBreaches);
+    const currIndex = indexByName(breaches);
+    const added = [];
+    for (const [name, breach] of currIndex.entries()) {
+      if (!prevIndex.has(name)) added.push(breach);
+    }
+
+    fs.writeFileSync(
+      path.join(outDir, 'new-breaches.json'),
+      JSON.stringify({ generated_at: new Date().toISOString(), addedCount: added.length, added }, null, 2)
+    );
+
+    fs.writeFileSync(
+      path.join(outDir, 'latest.json'),
+      JSON.stringify(
+        {
+          generated_at: new Date().toISOString(),
+          file: filename,
+          totalBreaches: Array.isArray(breaches) ? breaches.length : 0,
+          addedSinceLast: added.length
+        },
+        null,
+        2
+      )
+    );
     console.log('Wrote dataset to', filepath);
     console.log(filepath);
   } catch (err) {

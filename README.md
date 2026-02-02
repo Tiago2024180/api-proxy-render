@@ -20,7 +20,7 @@
 Para workflows e deploy automático:
 - `HIBP_API_KEY` (para o workflow de atualização do dataset)
 - `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` (deploy do frontend)
-- `HF_TOKEN`, `HF_REPO` (opcional; upload do dataset para Hugging Face)
+- `HF_TOKEN`, `HF_REPO` (obrigatório para upload do dataset para Hugging Face)
 
 ### Vercel (env vars)
 - Não precisas de `HIBP_API_KEY` no Vercel.
@@ -53,6 +53,11 @@ O valor que vais usar no GitHub Secret `HF_REPO` é exatamente o **repo id**:
 1. GitHub → **Actions** → workflow **Update Dataset**
 2. Click **Run workflow**
 3. No fim, confirma que apareceu um ficheiro em Hugging Face em `datasets/`.
+
+Ficheiros publicados no Hugging Face:
+- `datasets/breaches-latest.json` (sempre o snapshot mais recente)
+- `datasets/latest.json` (metadados com `generated_at` + nome do snapshot)
+- `datasets/breaches-<timestamp>.json` (snapshots versionados)
 
 ## Frontend (Vercel rewrite)
 O frontend chama `/api/hibp/...` e o Vercel faz proxy para o Render usando:

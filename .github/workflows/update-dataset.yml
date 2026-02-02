@@ -30,6 +30,26 @@ jobs:
             exit 1
           fi
 
+      - name: Validate Hugging Face secrets
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ secrets.HF_REPO }}
+        run: |
+          if [ -z "${HF_TOKEN}" ] || [ -z "${HF_REPO}" ]; then
+            echo "Missing GitHub secrets for Hugging Face upload: HF_TOKEN and HF_REPO"
+            echo "Add them in GitHub: Settings -> Secrets and variables -> Actions"
+            exit 1
+          fi
+
+      - name: Download previous HF snapshot (best-effort)
+        env:
+          HF_REPO: ${{ secrets.HF_REPO }}
+        run: |
+          mkdir -p backend-render/datasets
+          url="https://huggingface.co/datasets/${HF_REPO}/resolve/main/datasets/breaches-latest.json"
+          echo "Downloading: ${url}"
+          curl -sSfL "${url}" -o backend-render/datasets/breaches-latest.json || echo "No previous snapshot yet (first run)"
+
       - name: Run dataset updater
         working-directory: backend-render
         env:
@@ -44,17 +64,12 @@ jobs:
       - name: Install hf dependencies
         run: pip install huggingface_hub
 
-      - name: Upload to Hugging Face (optional)
+      - name: Upload to Hugging Face
         working-directory: backend-render
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ secrets.HF_REPO }}
-        run: |
-          if [ -n "${HF_TOKEN}" ] && [ -n "${HF_REPO}" ]; then
-            python3 scripts/upload_to_hf.py
-          else
-            echo "HF_TOKEN or HF_REPO not set — skipping upload"
-          fi
+        run: python3 scripts/upload_to_hf.py
 
       - name: Upload dataset artifacts
         uses: actions/upload-artifact@v4
