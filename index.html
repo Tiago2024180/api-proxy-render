@@ -453,35 +453,64 @@
                     return;
                 }
 
+                // Preferred: stable metadata pointer created by CI (datasets/latest.json)
                 const url = `https://huggingface.co/datasets/${HF_DATASET_REPO}/resolve/main/datasets/latest.json?t=${Date.now()}`;
+                let meta = null;
+                let usedFallback = false;
+
                 const response = await fetch(url, { method: 'GET', headers: { 'Accept': 'application/json' } });
                 datasetProgress.style.width = '70%';
 
-                if (!response.ok) {
+                if (response.ok) {
+                    meta = await response.json();
+                } else if (response.status === 404) {
+                    // Fallback: if latest.json isn't published yet, use HF API to get lastModified
+                    // and infer the most recent timestamped snapshot filename.
+                    usedFallback = true;
+                    const apiUrl = `https://huggingface.co/api/datasets/${HF_DATASET_REPO}?t=${Date.now()}`;
+                    const apiRes = await fetch(apiUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
+                    if (!apiRes.ok) {
+                        const text = await apiRes.text();
+                        throw new Error(`HF API responded ${apiRes.status}: ${text}`);
+                    }
+                    const info = await apiRes.json();
+                    const siblings = Array.isArray(info.siblings) ? info.siblings : [];
+                    const files = siblings
+                        .map(s => (s && s.rfilename ? String(s.rfilename) : ''))
+                        .filter(Boolean);
+                    const snapshots = files
+                        .filter(f => /^datasets\/breaches-.*\.json$/i.test(f))
+                        .sort();
+                    const latestSnapshot = snapshots.length ? snapshots[snapshots.length - 1] : null;
+
+                    meta = {
+                        generated_at: info.lastModified || info.last_modified || null,
+                        file: latestSnapshot ? latestSnapshot.replace(/^datasets\//i, '') : 'unknown'
+                    };
+                } else {
                     const text = await response.text();
                     throw new Error(`HF responded ${response.status}: ${text}`);
                 }
 
-                const meta = await response.json();
-                const generatedAt = meta.generated_at ? new Date(meta.generated_at) : null;
-                const file = meta.file || 'unknown';
+                const generatedAt = meta && meta.generated_at ? new Date(meta.generated_at) : null;
+                const file = (meta && meta.file) ? meta.file : 'unknown';
 
                 datasetStatus.textContent = 'Up to date';
                 datasetStatus.className = 'px-3 py-1 bg-green-900 text-green-300 rounded-full text-sm font-semibold';
                 datasetProgress.style.width = '100%';
 
-                if (generatedAt) {
+                if (generatedAt && !Number.isNaN(generatedAt.getTime())) {
                     datasetLastUpdated = generatedAt;
-                    lastUpdated.textContent = `Last updated: ${formatDate(datasetLastUpdated)} (file: ${file})`;
+                    lastUpdated.textContent = `Last updated: ${formatDate(datasetLastUpdated)} (file: ${file})${usedFallback ? ' (fallback)' : ''}`;
                 } else {
-                    lastUpdated.textContent = `Last updated: Unknown (file: ${file})`;
+                    lastUpdated.textContent = `Last updated: Unknown (file: ${file})${usedFallback ? ' (fallback)' : ''}`;
                 }
             } catch (error) {
                 console.error('[HF] Dataset status error:', error);
                 datasetStatus.textContent = 'Error';
                 datasetStatus.className = 'px-3 py-1 bg-red-900 text-red-300 rounded-full text-sm font-semibold';
                 datasetProgress.style.width = '0%';
-                lastUpdated.textContent = `Failed to fetch HF latest.json: ${error.message}`;
+                lastUpdated.textContent = `Failed to fetch Hugging Face dataset status: ${error.message}`;
             } finally {
                 updateDatasetBtn.disabled = false;
                 updateDatasetBtn.innerHTML = '<i class="fas fa-sync-alt mr-3"></i>Refresh Hugging Face Dataset';
@@ -495,10 +524,8 @@
             testProxyBtn.innerHTML = '<i class="fas fa-spinner animate-spin mr-2"></i>Testing...';
             
             try {
-                // Try to fetch from the proxy (using a simple endpoint if available)
-                // Since we don't know the exact endpoint, we'll try a simple GET
-                // Call an API endpoint through the Vercel rewrite.
-                const response = await fetch('/api/stats', { method: 'GET' });
+                // Call a known API endpoint through the Vercel rewrite.
+                const response = await fetch('/api/hibp/breaches', { method: 'GET', headers: { 'Accept': 'application/json' } });
                 
                 setTimeout(() => {
                     if (response.status) {
