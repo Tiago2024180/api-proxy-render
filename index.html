@@ -29,6 +29,14 @@
             </div>
         </header>
 
+        <div id="envBanner" class="hidden mb-10 rounded-2xl border border-yellow-500/40 bg-yellow-900/30 p-5">
+            <div class="font-semibold text-yellow-200 mb-1">You are on a Vercel preview/protected deployment</div>
+            <div id="envBannerText" class="text-sm text-yellow-100/90"></div>
+            <div class="mt-3">
+                <a id="envBannerLink" href="https://api-proxy-render.vercel.app/" class="inline-block bg-yellow-500 hover:bg-yellow-400 text-black font-semibold px-4 py-2 rounded-lg">Open production site</a>
+            </div>
+        </div>
+
         <div class="grid md:grid-cols-2 gap-8 mb-12">
             <!-- Left column: Email check -->
             <div class="card rounded-2xl p-8 glow">
@@ -215,6 +223,25 @@
 
         // Configure your public Hugging Face dataset repo id (e.g. "tiago/hibp-breaches-dataset")
         const HF_DATASET_REPO = 'Tiago2024180/eyewebdataset';
+
+        // Show a banner when running on a protected Vercel preview URL to avoid confusing HTML auth/500 pages.
+        (function showEnvBanner() {
+            try {
+                const host = window.location.hostname || '';
+                const href = window.location.href || '';
+                const isPreviewProjects = /-projects\.vercel\.app$/i.test(host);
+                const isPreviewHashed = /\.vercel\.app$/i.test(host) && host.includes('-') && host !== 'api-proxy-render.vercel.app';
+                if (!isPreviewProjects && !isPreviewHashed) return;
+
+                const banner = document.getElementById('envBanner');
+                const text = document.getElementById('envBannerText');
+                if (!banner || !text) return;
+                banner.classList.remove('hidden');
+                text.textContent = `Current URL: ${href}. If /api calls return HTML (401/500), disable Vercel Deployment Protection for previews or use the production URL.`;
+            } catch {
+                // ignore
+            }
+        })();
 
         // Sample breach data for simulation
         const sampleBreaches = [
