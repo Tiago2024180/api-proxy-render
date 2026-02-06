@@ -222,6 +222,7 @@
         const passwordResults = document.getElementById('passwordResults');
 
         const API_BASE = '';
+        const DIRECT_RENDER_BASE = 'https://backend-proxy-s43a.onrender.com';
 
         // Configure your public Hugging Face dataset repo id (e.g. "tiago/hibp-breaches-dataset")
         const HF_DATASET_REPO = 'Tiago2024180/eyewebdataset';
@@ -298,6 +299,20 @@
                 }
             }
             throw lastErr || new Error('Request failed');
+        }
+
+        function shouldFallback(result) {
+            return !result.ok && (result.status >= 500 || result.body.kind === 'html');
+        }
+
+        async function requestApiWithFallback(path, options = {}, opts = {}) {
+            const primaryUrl = `${API_BASE}${path}`;
+            const primary = await requestApi(primaryUrl, options, opts);
+            if (!shouldFallback(primary)) return { ...primary, fallbackUsed: false };
+
+            const fallbackUrl = `${DIRECT_RENDER_BASE}${path}`;
+            const fallback = await requestApi(fallbackUrl, options, opts);
+            return { ...fallback, fallbackUsed: true, primaryStatus: primary.status, primaryBody: primary.body };
         }
 
         // Format date for display
@@ -425,7 +440,7 @@
                         'Accept': 'application/json'
                     }
                 }, 30000);
-                
+
                 console.log(`[HIBP] Response status: ${response.status}`);
                 
                 // Se não encontrou vazamentos (404 na HIBP API significa "não encontrado")
@@ -465,7 +480,8 @@
                     </div>
                 `;
 
-                const { ok, status, body } = await requestApi(`${API_BASE}/api/hibp/domain/${encodeURIComponent(value)}`,
+                const { ok, status, body, fallbackUsed } = await requestApiWithFallback(
+                    `/api/hibp/domain/${encodeURIComponent(value)}`,
                     { method: 'GET', headers: { 'Accept': 'application/json' } },
                     { timeoutMs: 30000, retries: 2 }
                 );
@@ -473,7 +489,8 @@
                 if (!ok) {
                     const msg = (body.kind === 'json' && body.value && body.value.error) ? body.value.error
                         : (body.kind === 'html' ? 'O servidor devolveu HTML em vez de JSON (possível erro do proxy/deploy).' : (body.rawText || 'Erro desconhecido'));
-                    return { breaches: [], error: `Erro ${status}: ${msg}` };
+                    const via = fallbackUsed ? ' (fallback direto Render)' : '';
+                    return { breaches: [], error: `Erro ${status}: ${msg}${via}` };
                 }
 
                 const breaches = Array.isArray(body.value) ? body.value : [];
@@ -512,16 +529,21 @@
                     return { pwned: false, count: 0, error: `Falha a gerar SHA-1 no browser: ${hashErr.message || hashErr}` };
                 }
 
-                const { ok, status, body } = await requestApi(`${API_BASE}/api/hibp/password`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ sha1 })
-                }, { timeoutMs: 30000, retries: 2 });
+                const { ok, status, body, fallbackUsed } = await requestApiWithFallback(
+                    '/api/hibp/password',
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        body: JSON.stringify({ sha1 })
+                    },
+                    { timeoutMs: 30000, retries: 2 }
+                );
 
                 if (!ok) {
                     const msg = (body.kind === 'json' && body.value && body.value.error) ? body.value.error
                         : (body.kind === 'html' ? 'O servidor devolveu HTML em vez de JSON (proxy/proteção/deploy).' : (body.rawText || 'Erro desconhecido'));
-                    return { pwned: false, count: 0, error: `Erro ${status}: ${msg}` };
+                    const via = fallbackUsed ? ' (fallback direto Render)' : '';
+                    return { pwned: false, count: 0, error: `Erro ${status}: ${msg}${via}` };
                 }
 
                 const result = (body.kind === 'json') ? body.value : null;
