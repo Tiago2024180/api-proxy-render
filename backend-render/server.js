@@ -33,15 +33,26 @@ try {
 const HIBP_API_KEY = process.env.HIBP_API_KEY || process.env.HIBP_KEY;
 
 // Middleware
-// CORS: allow requests from FRONTEND_URL (can be comma-separated list). Falls back to allow all when not set (dev).
+// CORS: allow requests from FRONTEND_URL (can be comma-separated list).
+// Also allow Vercel/Render hosts to avoid cross-origin failures when using direct Render fallback.
 const frontendEnv = process.env.FRONTEND_URL || '';
 const allowedOrigins = frontendEnv ? frontendEnv.split(',').map(s => s.trim()).filter(Boolean) : ['*'];
+
+function isAllowedOrigin(origin) {
+    if (!origin) return true;
+    if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) return true;
+
+    const lower = origin.toLowerCase();
+    if (lower.endsWith('.vercel.app')) return true;
+    if (lower.endsWith('.onrender.com')) return true;
+
+    return false;
+}
 
 app.use(cors({
     origin: function(origin, callback) {
         // allow non-browser requests (e.g., curl, server-to-server) when origin is undefined
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+        if (isAllowedOrigin(origin)) {
             return callback(null, true);
         }
         return callback(new Error('Not allowed by CORS'));
