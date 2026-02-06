@@ -127,7 +127,10 @@ const RSS_FEEDS = [
     { name: 'BleepingComputer', url: 'https://www.bleepingcomputer.com/feed/' },
     { name: 'TheRecord', url: 'https://therecord.media/feed/' },
     { name: 'KrebsOnSecurity', url: 'https://krebsonsecurity.com/feed/' },
-    { name: 'HIBP Blog', url: 'https://www.troyhunt.com/feed/' }
+    { name: 'HIBP Blog', url: 'https://www.troyhunt.com/feed/' },
+    { name: 'TheHackerNews', url: 'https://feeds.feedburner.com/TheHackersNews' },
+    { name: 'SecurityWeek', url: 'https://www.securityweek.com/feed/' },
+    { name: 'TheRegisterSecurity', url: 'https://www.theregister.com/security/headlines.atom' }
 ];
 
 function getCached(key) {
@@ -194,7 +197,8 @@ function normalizeItems(feedName, data) {
             title: item.title || '',
             link: item.link || '',
             pubDate: item.pubDate || item.date || '',
-            source: feedName
+            source: feedName,
+            snippet: item.description || item.summary || item['content:encoded'] || ''
         }));
     }
     // Atom: data.feed.entry
@@ -204,7 +208,8 @@ function normalizeItems(feedName, data) {
             title: item.title && item.title['#text'] ? item.title['#text'] : (item.title || ''),
             link: item.link && item.link.href ? item.link.href : (item.link || ''),
             pubDate: item.updated || item.published || '',
-            source: feedName
+            source: feedName,
+            snippet: (item.summary && item.summary['#text']) ? item.summary['#text'] : (item.summary || item.content || '')
         }));
     }
     return [];
@@ -242,7 +247,7 @@ function matchItems(items, keywords) {
     const seen = new Set();
     const results = [];
     for (const item of items) {
-        const hay = `${item.title} ${item.link}`.toLowerCase();
+        const hay = `${item.title} ${item.link} ${item.snippet || ''}`.toLowerCase();
         if (kw.some(k => hay.includes(k))) {
             const key = item.link || item.title;
             if (key && !seen.has(key)) {
