@@ -278,7 +278,10 @@
             const items = payload.results.map(r => {
                 const link = r.link ? `<a href="${r.link}" target="_blank" rel="noopener" class="text-yellow-300 hover:text-yellow-200 underline">${r.title || r.link}</a>` : (r.title || 'Unknown');
                 const meta = r.source ? `<span class="opacity-70">${r.source}</span>` : '';
-                return `<li class="mb-2">${link}<div class="text-xs opacity-70">${meta}${r.pubDate ? ` • ${r.pubDate}` : ''}</div></li>`;
+                const mk = r.reason && Array.isArray(r.reason.matchedKeywords) ? r.reason.matchedKeywords.join(', ') : '';
+                const ms = r.reason && Array.isArray(r.reason.matchedSignals) ? r.reason.matchedSignals.join(', ') : '';
+                const reason = (mk || ms) ? `<div class="text-xs opacity-70">Matched: ${[mk ? `keyword(s): ${mk}` : '', ms ? `signals: ${ms}` : ''].filter(Boolean).join(' | ')}</div>` : '';
+                return `<li class="mb-2">${link}<div class="text-xs opacity-70">${meta}${r.pubDate ? ` • ${r.pubDate}` : ''}</div>${reason}</li>`;
             }).join('');
 
             container.innerHTML = `

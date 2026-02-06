@@ -138,6 +138,13 @@ const RSS_FEEDS = [
     { name: 'Wired', url: 'https://www.wired.com/feed/rss' }
 ];
 
+const SECURITY_TERMS = [
+    'breach', 'breached', 'hacked', 'hack', 'data leak', 'leak', 'leaked',
+    'ransomware', 'malware', 'phishing', 'credential', 'credentials',
+    'vulnerability', 'exploit', 'zero-day', 'exposed', 'exposure',
+    'data theft', 'extortion'
+];
+
 function getCached(key) {
     const item = cache.get(key);
     if (item && Date.now() - item.timestamp < CACHE_TTL) {
@@ -253,15 +260,61 @@ function matchItems(items, keywords) {
     const results = [];
     for (const item of items) {
         const hay = `${item.title} ${item.link} ${item.snippet || ''}`.toLowerCase();
-        if (kw.some(k => hay.includes(k))) {
+        const matchedKeywords = kw.filter(k => hay.includes(k));
+        const matchedSignals = SECURITY_TERMS.filter(t => hay.includes(t));
+
+        if (matchedKeywords.length > 0) {
             const key = item.link || item.title;
             if (key && !seen.has(key)) {
                 seen.add(key);
-                results.push(item);
+                results.push({
+                    ...item,
+                    reason: {
+                        matchedKeywords,
+                        matchedSignals
+                    }
+                });
             }
         }
     }
     return results.slice(0, 8);
+}
+
+async function fetchGdeltItems(query, type) {
+    const keywords = buildKeywords(query, type);
+    const kw = keywords.map(k => k.toLowerCase()).filter(k => k.length >= 3);
+    if (kw.length === 0) return [];
+
+    const topicQuery = kw.map(k => `"${k}"`).join(' OR ');
+    const signalQuery = SECURITY_TERMS.map(t => `"${t}"`).join(' OR ');
+    const fullQuery = `(${topicQuery}) AND (${signalQuery})`;
+
+    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(fullQuery)}&mode=ArtList&maxrecords=15&format=json&sort=DateDesc`;
+    try {
+        const res = await fetchWithTimeout(url, { method: 'GET' }, 15000);
+        if (!res.ok) return [];
+        const data = await res.json();
+        const articles = Array.isArray(data.articles) ? data.articles : [];
+        return articles.map(a => {
+            const title = a.title || '';
+            const link = a.url || '';
+            const pubDate = a.seendate || '';
+            const snippet = a.extras && a.extras.description ? a.extras.description : (a.description || '');
+            const hay = `${title} ${link} ${snippet}`.toLowerCase();
+            const matchedKeywords = kw.filter(k => hay.includes(k));
+            const matchedSignals = SECURITY_TERMS.filter(t => hay.includes(t));
+            return {
+                title,
+                link,
+                pubDate,
+                source: 'GDELT',
+                snippet,
+                reason: { matchedKeywords, matchedSignals }
+            };
+        });
+    } catch {
+        return [];
+    }
 }
 
 // Health check
@@ -292,16 +345,37 @@ app.get('/api/reports/unverified/:query', async (req, res) => {
         return res.status(400).json({ error: 'Query inválida', results: [] });
     }
 
+    const cacheKey = `reports:unverified:${type}:${String(query).toLowerCase()}`;
+    const cached = cache.get(cacheKey);
+    if (isCacheValid(cached, REPORTS_TTL)) {
+        return res.json(cached.data);
+    }
+
     try {
         const items = await fetchRssItems();
-        const results = matchItems(items, keywords);
-        return res.json({
+        const rssResults = matchItems(items, keywords);
+        const gdeltResults = await fetchGdeltItems(query, type);
+
+        const merged = [];
+        const seen = new Set();
+        for (const item of [...gdeltResults, ...rssResults]) {
+            const key = item.link || item.title;
+            if (key && !seen.has(key)) {
+                seen.add(key);
+                merged.push(item);
+            }
+        }
+
+        const payload = {
             query,
             type,
             keywords,
-            sources: RSS_FEEDS.map(f => f.name),
-            results
-        });
+            sources: [...RSS_FEEDS.map(f => f.name), 'GDELT'],
+            results: merged.slice(0, 10)
+        };
+
+        setCache(cacheKey, payload);
+        return res.json(payload);
     } catch (error) {
         return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
     }
