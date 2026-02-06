@@ -11,6 +11,7 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const crypto = require('crypto');
 const path = require('path');
+const { XMLParser } = require('fast-xml-parser');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -121,6 +122,14 @@ function checkRateLimit(ip) {
 const cache = new Map();
 const CACHE_TTL = 300000; // 5 minutos
 
+const REPORTS_TTL = 600000; // 10 minutos
+const RSS_FEEDS = [
+    { name: 'BleepingComputer', url: 'https://www.bleepingcomputer.com/feed/' },
+    { name: 'TheRecord', url: 'https://therecord.media/feed/' },
+    { name: 'KrebsOnSecurity', url: 'https://krebsonsecurity.com/feed/' },
+    { name: 'HIBP Blog', url: 'https://www.troyhunt.com/feed/' }
+];
+
 function getCached(key) {
     const item = cache.get(key);
     if (item && Date.now() - item.timestamp < CACHE_TTL) {
@@ -135,6 +144,116 @@ function setCache(key, data) {
     cache.set(key, { data, timestamp: Date.now() });
 }
 
+function isCacheValid(item, ttlMs) {
+    return item && Date.now() - item.timestamp < ttlMs;
+}
+
+function getRootDomain(hostname) {
+    const host = String(hostname || '').toLowerCase().replace(/^www\./, '');
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length <= 2) return host;
+    return parts.slice(-2).join('.');
+}
+
+function buildKeywords(query, type) {
+    const raw = String(query || '').trim().toLowerCase();
+    if (!raw) return [];
+
+    if (type === 'email' && raw.includes('@')) {
+        const domain = raw.split('@').pop();
+        const root = getRootDomain(domain);
+        const brand = root.split('.')[0];
+        return [domain, root, brand].filter(Boolean);
+    }
+
+    if (type === 'url' || raw.includes('://')) {
+        try {
+            const u = new URL(raw);
+            const root = getRootDomain(u.hostname);
+            const brand = root.split('.')[0];
+            return [u.hostname, root, brand].filter(Boolean);
+        } catch {
+            // fallthrough
+        }
+    }
+
+    if (type === 'domain') {
+        const root = getRootDomain(raw);
+        const brand = root.split('.')[0];
+        return [raw, root, brand].filter(Boolean);
+    }
+
+    return [raw];
+}
+
+function normalizeItems(feedName, data) {
+    // RSS 2.0: data.rss.channel.item
+    const rssItems = data && data.rss && data.rss.channel && data.rss.channel.item;
+    if (Array.isArray(rssItems)) {
+        return rssItems.map(item => ({
+            title: item.title || '',
+            link: item.link || '',
+            pubDate: item.pubDate || item.date || '',
+            source: feedName
+        }));
+    }
+    // Atom: data.feed.entry
+    const atomItems = data && data.feed && data.feed.entry;
+    if (Array.isArray(atomItems)) {
+        return atomItems.map(item => ({
+            title: item.title && item.title['#text'] ? item.title['#text'] : (item.title || ''),
+            link: item.link && item.link.href ? item.link.href : (item.link || ''),
+            pubDate: item.updated || item.published || '',
+            source: feedName
+        }));
+    }
+    return [];
+}
+
+async function fetchRssItems() {
+    const cacheKey = 'reports:rss_items';
+    const cached = cache.get(cacheKey);
+    if (isCacheValid(cached, REPORTS_TTL)) return cached.data;
+
+    const parser = new XMLParser({ ignoreAttributes: false });
+    const allItems = [];
+
+    for (const feed of RSS_FEEDS) {
+        try {
+            const res = await fetchWithTimeout(feed.url, { method: 'GET' }, 15000);
+            if (!res.ok) continue;
+            const xml = await res.text();
+            const data = parser.parse(xml);
+            const items = normalizeItems(feed.name, data);
+            allItems.push(...items);
+        } catch {
+            // ignore feed failures
+        }
+    }
+
+    setCache(cacheKey, allItems);
+    return allItems;
+}
+
+function matchItems(items, keywords) {
+    const kw = keywords.map(k => k.toLowerCase()).filter(k => k.length >= 3);
+    if (kw.length === 0) return [];
+
+    const seen = new Set();
+    const results = [];
+    for (const item of items) {
+        const hay = `${item.title} ${item.link}`.toLowerCase();
+        if (kw.some(k => hay.includes(k))) {
+            const key = item.link || item.title;
+            if (key && !seen.has(key)) {
+                seen.add(key);
+                results.push(item);
+            }
+        }
+    }
+    return results.slice(0, 8);
+}
+
 // Health check
 app.get('/', (req, res) => {
     res.json({
@@ -146,10 +265,36 @@ app.get('/', (req, res) => {
             checkEmail: 'GET /api/hibp/check/:email',
             getBreaches: 'GET /api/hibp/breaches',
             checkDomain: 'GET /api/hibp/domain/:domainOrUrl',
-            checkPassword: 'POST /api/hibp/password'
+            checkPassword: 'POST /api/hibp/password',
+            unverifiedReports: 'GET /api/reports/unverified/:query?type=email|domain|url'
         },
         apiKeyConfigured: !!HIBP_API_KEY
     });
+});
+
+// Unverified reports endpoint (news/RSS based, not breach databases)
+app.get('/api/reports/unverified/:query', async (req, res) => {
+    const { query } = req.params;
+    const type = String(req.query.type || 'domain').toLowerCase();
+    const keywords = buildKeywords(query, type);
+
+    if (!query || keywords.length === 0) {
+        return res.status(400).json({ error: 'Query inválida', results: [] });
+    }
+
+    try {
+        const items = await fetchRssItems();
+        const results = matchItems(items, keywords);
+        return res.json({
+            query,
+            type,
+            keywords,
+            sources: RSS_FEEDS.map(f => f.name),
+            results
+        });
+    } catch (error) {
+        return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
+    }
 });
 
 function normalizeDomainOrUrl(input) {

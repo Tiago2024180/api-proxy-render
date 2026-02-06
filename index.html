@@ -74,6 +74,7 @@
                         </button>
                     </div>
                     <div id="domainResults" class="text-sm opacity-90"></div>
+                    <div id="domainUnverified" class="text-sm opacity-90 mt-4"></div>
                 </div>
 
                 <div class="mt-8 border-t border-gray-700 pt-8">
@@ -86,6 +87,7 @@
                         </button>
                     </div>
                     <div id="passwordResults" class="text-sm opacity-90"></div>
+                    <div id="passwordUnverified" class="text-sm opacity-90 mt-4"></div>
                 </div>
             </div>
 
@@ -217,9 +219,11 @@
         const domainInput = document.getElementById('domainInput');
         const domainCheckBtn = document.getElementById('domainCheckBtn');
         const domainResults = document.getElementById('domainResults');
+        const domainUnverified = document.getElementById('domainUnverified');
         const passwordInput = document.getElementById('passwordInput');
         const passwordCheckBtn = document.getElementById('passwordCheckBtn');
         const passwordResults = document.getElementById('passwordResults');
+        const passwordUnverified = document.getElementById('passwordUnverified');
 
         const API_BASE = '';
         const DIRECT_RENDER_BASE = 'https://backend-proxy-s43a.onrender.com';
@@ -262,6 +266,43 @@
         function isProbablyHtml(text) {
             const t = (text || '').trim();
             return t.startsWith('<!doctype html') || t.startsWith('<html') || t.startsWith('<');
+        }
+
+        function renderUnverified(container, title, payload) {
+            if (!container) return;
+            if (!payload || !Array.isArray(payload.results) || payload.results.length === 0) {
+                container.innerHTML = `<div class="text-xs opacity-70">Unverified reports: none found.</div>`;
+                return;
+            }
+
+            const items = payload.results.map(r => {
+                const link = r.link ? `<a href="${r.link}" target="_blank" rel="noopener" class="text-yellow-300 hover:text-yellow-200 underline">${r.title || r.link}</a>` : (r.title || 'Unknown');
+                const meta = r.source ? `<span class="opacity-70">${r.source}</span>` : '';
+                return `<li class="mb-2">${link}<div class="text-xs opacity-70">${meta}${r.pubDate ? ` • ${r.pubDate}` : ''}</div></li>`;
+            }).join('');
+
+            container.innerHTML = `
+                <div class="mt-2 p-4 border border-yellow-500/40 rounded-xl bg-yellow-900/20">
+                    <div class="font-semibold text-yellow-200 mb-2">${title} (Unverified sources)</div>
+                    <ul class="list-disc ml-6">${items}</ul>
+                    <div class="text-xs opacity-70 mt-2">These are news/rumor reports and may be inaccurate.</div>
+                </div>
+            `;
+        }
+
+        async function fetchUnverifiedReports(query, type) {
+            if (!query) return null;
+            try {
+                const path = `/api/reports/unverified/${encodeURIComponent(query)}?type=${encodeURIComponent(type)}`;
+                const { ok, status, body } = await requestApi(`${API_BASE}${path}`, { method: 'GET', headers: { 'Accept': 'application/json' } }, { timeoutMs: 20000, retries: 1 });
+                if (!ok) {
+                    const msg = (body.kind === 'json' && body.value && body.value.error) ? body.value.error : (body.rawText || 'Erro desconhecido');
+                    return { error: `Erro ${status}: ${msg}`, results: [] };
+                }
+                return body.kind === 'json' ? body.value : null;
+            } catch (e) {
+                return { error: `Erro de conexão: ${e.message}`, results: [] };
+            }
         }
 
         async function fetchWithTimeout(url, options = {}, timeoutMs = 25000) {
@@ -360,6 +401,7 @@
                         <p class="opacity-90">O email <strong>${email}</strong> não foi encontrado em nenhum vazamento conhecido.</p>
                         <p class="text-sm mt-4 opacity-80">Boas notícias! Mesmo assim, use sempre passwords únicas para cada serviço.</p>
                     </div>
+                    <div id="unverifiedSection"></div>
                 `;
                 return;
             }
@@ -414,6 +456,7 @@
                 <div class="mt-6 p-4 bg-blue-900 rounded-xl">
                     <p class="text-sm"><i class="fas fa-lightbulb mr-2"></i><strong>Recomendação:</strong> Altere as passwords destes serviços e ative autenticação de dois fatores onde possível.</p>
                 </div>
+                <div id="unverifiedSection"></div>
             `;
         }
 
@@ -685,6 +728,11 @@
             try {
                 const result = await checkEmail(email);
                 displayResults(result.email, result.breaches, result.error);
+                const unverifiedContainer = document.getElementById('unverifiedSection');
+                if (result.error || !unverifiedContainer) return;
+                const emailDomain = email.includes('@') ? email.split('@').pop() : '';
+                const unverified = await fetchUnverifiedReports(emailDomain, 'email');
+                renderUnverified(unverifiedContainer, 'Related news reports', unverified);
             } finally {
                 checkBtn.disabled = false;
                 checkBtn.innerHTML = old;
@@ -718,6 +766,9 @@
                 const list = result.breaches.slice(0, 8).map(b => `<li><strong>${b.Name || b.Title || 'Unknown'}</strong> (${b.BreachDate || 'n/a'})</li>`).join('');
                 const extra = result.breaches.length > 8 ? `<div class="opacity-70 mt-2">+${result.breaches.length - 8} more</div>` : '';
                 domainResults.innerHTML = `<div class="text-yellow-200">Found ${result.breaches.length} breach(es):</div><ul class="list-disc ml-6 mt-2">${list}</ul>${extra}`;
+                const query = (domainInput.value || '').trim();
+                const unverified = await fetchUnverifiedReports(query, 'domain');
+                renderUnverified(domainUnverified, 'Related news reports', unverified);
             } finally {
                 domainCheckBtn.disabled = false;
                 domainCheckBtn.innerHTML = old;
@@ -732,13 +783,16 @@
                 const result = await checkPassword(passwordInput.value);
                 if (result.error) {
                     passwordResults.innerHTML = `<div class="text-red-300">${result.error}</div>`;
+                    passwordUnverified.innerHTML = '';
                     return;
                 }
                 if (!result.pwned) {
                     passwordResults.innerHTML = '<div class="text-green-300">Not found in Pwned Passwords.</div>';
+                    passwordUnverified.innerHTML = '<div class="text-xs opacity-70">Unverified reports are not available for passwords (only domain/news sources).</div>';
                     return;
                 }
                 passwordResults.innerHTML = `<div class="text-yellow-200">This password was seen <strong>${result.count}</strong> times in breaches. Change it.</div>`;
+                passwordUnverified.innerHTML = '<div class="text-xs opacity-70">Unverified reports are not available for passwords (only domain/news sources).</div>';
             } finally {
                 passwordCheckBtn.disabled = false;
                 passwordCheckBtn.innerHTML = old;
