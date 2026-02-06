@@ -221,6 +221,8 @@
         const passwordCheckBtn = document.getElementById('passwordCheckBtn');
         const passwordResults = document.getElementById('passwordResults');
 
+        const API_BASE = '';
+
         // Configure your public Hugging Face dataset repo id (e.g. "tiago/hibp-breaches-dataset")
         const HF_DATASET_REPO = 'Tiago2024180/eyewebdataset';
 
@@ -255,6 +257,48 @@
         // Current dataset state
         let datasetLastUpdated = new Date();
         let datasetUpdateInProgress = false;
+
+        function isProbablyHtml(text) {
+            const t = (text || '').trim();
+            return t.startsWith('<!doctype html') || t.startsWith('<html') || t.startsWith('<');
+        }
+
+        async function fetchWithTimeout(url, options = {}, timeoutMs = 25000) {
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                return await fetch(url, { ...options, signal: controller.signal });
+            } finally {
+                clearTimeout(id);
+            }
+        }
+
+        async function readResponseBodySmart(response) {
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+            const text = await response.text();
+            if (contentType.includes('application/json')) {
+                try {
+                    return { kind: 'json', value: JSON.parse(text), rawText: text };
+                } catch {
+                    return { kind: 'text', value: text, rawText: text };
+                }
+            }
+            return { kind: isProbablyHtml(text) ? 'html' : 'text', value: text, rawText: text };
+        }
+
+        async function requestApi(url, options = {}, { timeoutMs = 25000, retries = 1 } = {}) {
+            let lastErr = null;
+            for (let attempt = 1; attempt <= Math.max(1, retries); attempt++) {
+                try {
+                    const response = await fetchWithTimeout(url, options, timeoutMs);
+                    const body = await readResponseBodySmart(response);
+                    return { ok: response.ok, status: response.status, body };
+                } catch (e) {
+                    lastErr = e;
+                }
+            }
+            throw lastErr || new Error('Request failed');
+        }
 
         // Format date for display
         function formatDate(date) {
@@ -369,21 +413,18 @@
                     <p class="text-xs opacity-60 mt-2">Nota: O servidor Render pode demorar ~30s se estiver em cold start</p>
                 </div>
             `;
-
-            // Use same-origin `/api/...` and let Vercel rewrite proxy to Render.
-            const API_BASE = '';
             
             try {
                 console.log(`[HIBP] Checking email: ${email}`);
                 console.log(`[HIBP] Calling: ${API_BASE}/api/hibp/check/${encodeURIComponent(email)}`);
                 
                 // Chamada REAL ao backend Render
-                const response = await fetch(`${API_BASE}/api/hibp/check/${encodeURIComponent(email)}`, {
+                const response = await fetchWithTimeout(`${API_BASE}/api/hibp/check/${encodeURIComponent(email)}`, {
                     method: 'GET',
                     headers: {
                         'Accept': 'application/json'
                     }
-                });
+                }, 30000);
                 
                 console.log(`[HIBP] Response status: ${response.status}`);
                 
@@ -395,7 +436,8 @@
                 
                 // Se houve erro
                 if (!response.ok) {
-                    const errorText = await response.text();
+                    const parsed = await readResponseBodySmart(response);
+                    const errorText = (parsed.kind === 'json' && parsed.value && parsed.value.error) ? parsed.value.error : (parsed.rawText || 'Falha na comunicação com o backend');
                     console.error('[HIBP] Backend error:', response.status, errorText);
                     return { email, breaches: [], error: `Erro ${response.status}: ${errorText || 'Falha na comunicação com o backend'}` };
                 }
@@ -415,13 +457,26 @@
             const value = (domainOrUrl || '').trim();
             if (!value) return { breaches: [], error: 'Please enter a domain or URL.' };
             try {
-                domainResults.innerHTML = '<div class="opacity-80">Checking domain/URL...</div>';
-                const response = await fetch(`/api/hibp/domain/${encodeURIComponent(value)}`, { method: 'GET', headers: { 'Accept': 'application/json' } });
-                if (!response.ok) {
-                    const text = await response.text();
-                    return { breaches: [], error: `Erro ${response.status}: ${text}` };
+                domainResults.innerHTML = `
+                    <div class="text-center py-4">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-400 mb-2"></div>
+                        <div class="font-semibold">A verificar domínio/URL...</div>
+                        <div class="text-xs opacity-70 mt-1">A consultar via backend Render (pode demorar no cold start)</div>
+                    </div>
+                `;
+
+                const { ok, status, body } = await requestApi(`${API_BASE}/api/hibp/domain/${encodeURIComponent(value)}`,
+                    { method: 'GET', headers: { 'Accept': 'application/json' } },
+                    { timeoutMs: 30000, retries: 2 }
+                );
+
+                if (!ok) {
+                    const msg = (body.kind === 'json' && body.value && body.value.error) ? body.value.error
+                        : (body.kind === 'html' ? 'O servidor devolveu HTML em vez de JSON (possível erro do proxy/deploy).' : (body.rawText || 'Erro desconhecido'));
+                    return { breaches: [], error: `Erro ${status}: ${msg}` };
                 }
-                const breaches = await response.json();
+
+                const breaches = Array.isArray(body.value) ? body.value : [];
                 return { breaches, error: null };
             } catch (e) {
                 return { breaches: [], error: `Erro de conexão: ${e.message}` };
@@ -442,19 +497,35 @@
             const value = (password || '');
             if (!value) return { pwned: false, count: 0, error: 'Please enter a password.' };
             try {
-                passwordResults.innerHTML = '<div class="opacity-80">Checking password (k-anonymity)...</div>';
-                const sha1 = await sha1HexUpper(value);
-                const response = await fetch('/api/hibp/password', {
+                passwordResults.innerHTML = `
+                    <div class="text-center py-4">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-emerald-400 mb-2"></div>
+                        <div class="font-semibold">A verificar password (k-anonymity)...</div>
+                        <div class="text-xs opacity-70 mt-1">A hash (SHA-1) é feita no browser; enviamos apenas o hash</div>
+                    </div>
+                `;
+
+                let sha1 = null;
+                try {
+                    sha1 = await sha1HexUpper(value);
+                } catch (hashErr) {
+                    return { pwned: false, count: 0, error: `Falha a gerar SHA-1 no browser: ${hashErr.message || hashErr}` };
+                }
+
+                const { ok, status, body } = await requestApi(`${API_BASE}/api/hibp/password`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                     body: JSON.stringify({ sha1 })
-                });
-                if (!response.ok) {
-                    const text = await response.text();
-                    return { pwned: false, count: 0, error: `Erro ${response.status}: ${text}` };
+                }, { timeoutMs: 30000, retries: 2 });
+
+                if (!ok) {
+                    const msg = (body.kind === 'json' && body.value && body.value.error) ? body.value.error
+                        : (body.kind === 'html' ? 'O servidor devolveu HTML em vez de JSON (proxy/proteção/deploy).' : (body.rawText || 'Erro desconhecido'));
+                    return { pwned: false, count: 0, error: `Erro ${status}: ${msg}` };
                 }
-                const result = await response.json();
-                return { pwned: !!result.pwned, count: result.count || 0, error: null };
+
+                const result = (body.kind === 'json') ? body.value : null;
+                return { pwned: !!(result && result.pwned), count: (result && result.count) ? result.count : 0, error: null };
             } catch (e) {
                 return { pwned: false, count: 0, error: `Erro de conexão: ${e.message}` };
             }
@@ -586,8 +657,16 @@
                 return;
             }
             
-            const result = await checkEmail(email);
-            displayResults(result.email, result.breaches, result.error);
+            checkBtn.disabled = true;
+            const old = checkBtn.innerHTML;
+            checkBtn.innerHTML = '<i class="fas fa-spinner animate-spin mr-2"></i>Checking';
+            try {
+                const result = await checkEmail(email);
+                displayResults(result.email, result.breaches, result.error);
+            } finally {
+                checkBtn.disabled = false;
+                checkBtn.innerHTML = old;
+            }
         });
 
         // Allow Enter key to trigger check
@@ -601,31 +680,47 @@
         testProxyBtn.addEventListener('click', testProxy);
 
         domainCheckBtn.addEventListener('click', async () => {
-            const result = await checkDomain(domainInput.value);
-            if (result.error) {
-                domainResults.innerHTML = `<div class="text-red-300">${result.error}</div>`;
-                return;
+            domainCheckBtn.disabled = true;
+            const old = domainCheckBtn.innerHTML;
+            domainCheckBtn.innerHTML = '<i class="fas fa-spinner animate-spin mr-2"></i>Checking';
+            try {
+                const result = await checkDomain(domainInput.value);
+                if (result.error) {
+                    domainResults.innerHTML = `<div class="text-red-300">${result.error}</div>`;
+                    return;
+                }
+                if (!result.breaches || result.breaches.length === 0) {
+                    domainResults.innerHTML = '<div class="text-green-300">No breaches found for this domain.</div>';
+                    return;
+                }
+                const list = result.breaches.slice(0, 8).map(b => `<li><strong>${b.Name || b.Title || 'Unknown'}</strong> (${b.BreachDate || 'n/a'})</li>`).join('');
+                const extra = result.breaches.length > 8 ? `<div class="opacity-70 mt-2">+${result.breaches.length - 8} more</div>` : '';
+                domainResults.innerHTML = `<div class="text-yellow-200">Found ${result.breaches.length} breach(es):</div><ul class="list-disc ml-6 mt-2">${list}</ul>${extra}`;
+            } finally {
+                domainCheckBtn.disabled = false;
+                domainCheckBtn.innerHTML = old;
             }
-            if (!result.breaches || result.breaches.length === 0) {
-                domainResults.innerHTML = '<div class="text-green-300">No breaches found for this domain.</div>';
-                return;
-            }
-            const list = result.breaches.slice(0, 8).map(b => `<li><strong>${b.Name || b.Title || 'Unknown'}</strong> (${b.BreachDate || 'n/a'})</li>`).join('');
-            const extra = result.breaches.length > 8 ? `<div class="opacity-70 mt-2">+${result.breaches.length - 8} more</div>` : '';
-            domainResults.innerHTML = `<div class="text-yellow-200">Found ${result.breaches.length} breach(es):</div><ul class="list-disc ml-6 mt-2">${list}</ul>${extra}`;
         });
 
         passwordCheckBtn.addEventListener('click', async () => {
-            const result = await checkPassword(passwordInput.value);
-            if (result.error) {
-                passwordResults.innerHTML = `<div class="text-red-300">${result.error}</div>`;
-                return;
+            passwordCheckBtn.disabled = true;
+            const old = passwordCheckBtn.innerHTML;
+            passwordCheckBtn.innerHTML = '<i class="fas fa-spinner animate-spin mr-2"></i>Checking';
+            try {
+                const result = await checkPassword(passwordInput.value);
+                if (result.error) {
+                    passwordResults.innerHTML = `<div class="text-red-300">${result.error}</div>`;
+                    return;
+                }
+                if (!result.pwned) {
+                    passwordResults.innerHTML = '<div class="text-green-300">Not found in Pwned Passwords.</div>';
+                    return;
+                }
+                passwordResults.innerHTML = `<div class="text-yellow-200">This password was seen <strong>${result.count}</strong> times in breaches. Change it.</div>`;
+            } finally {
+                passwordCheckBtn.disabled = false;
+                passwordCheckBtn.innerHTML = old;
             }
-            if (!result.pwned) {
-                passwordResults.innerHTML = '<div class="text-green-300">Not found in Pwned Passwords.</div>';
-                return;
-            }
-            passwordResults.innerHTML = `<div class="text-yellow-200">This password was seen <strong>${result.count}</strong> times in breaches. Change it.</div>`;
         });
 
         // Load dataset status on page load
