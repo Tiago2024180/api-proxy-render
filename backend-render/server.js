@@ -130,7 +130,12 @@ const RSS_FEEDS = [
     { name: 'HIBP Blog', url: 'https://www.troyhunt.com/feed/' },
     { name: 'TheHackerNews', url: 'https://feeds.feedburner.com/TheHackersNews' },
     { name: 'SecurityWeek', url: 'https://www.securityweek.com/feed/' },
-    { name: 'TheRegisterSecurity', url: 'https://www.theregister.com/security/headlines.atom' }
+    { name: 'TheRegisterSecurity', url: 'https://www.theregister.com/security/headlines.atom' },
+    { name: 'ReutersTopNews', url: 'https://feeds.reuters.com/reuters/topNews' },
+    { name: 'BBCTechnology', url: 'http://feeds.bbci.co.uk/news/technology/rss.xml' },
+    { name: 'TheVerge', url: 'https://www.theverge.com/rss/index.xml' },
+    { name: 'ArsTechnica', url: 'http://feeds.arstechnica.com/arstechnica/index' },
+    { name: 'Wired', url: 'https://www.wired.com/feed/rss' }
 ];
 
 function getCached(key) {
