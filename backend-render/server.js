@@ -593,12 +593,8 @@ function queueHFWrite(domain, breaches) {
     if (!HF_TOKEN) return;
     hfWriteBuffer.push({ domain, breaches, timestamp: new Date().toISOString() });
 
-    // Flush every 5 records or after 2 minutes
-    if (hfWriteBuffer.length >= 5) {
-        flushHFWrites();
-    } else if (!hfWriteTimer) {
-        hfWriteTimer = setTimeout(flushHFWrites, 120000);
-    }
+    // Flush immediately so writes are not lost when Render spins down
+    flushHFWrites();
 }
 
 async function flushHFWrites() {
@@ -608,17 +604,71 @@ async function flushHFWrites() {
     const batch = hfWriteBuffer.splice(0);
     console.log(`[HF] Flushing ${batch.length} breach records to dataset...`);
 
+    const writtenRecords = [];
     for (const item of batch) {
-        // Store in .autochecks/ (dot-prefix hides from HF dataset parser, avoids schema conflicts)
+        // Store in .autochecks/ for individual domain files
         const filePath = `.autochecks/${item.domain}.json`;
-        // Write metadata wrapper — NOT mixed into main dataset table
         const record = {
             domain: item.domain,
             checkedAt: item.timestamp,
             breachCount: item.breaches.length,
             breaches: item.breaches
         };
-        await pushToHFDataset(filePath, record, `Auto: breach data for ${item.domain}`);
+        const ok = await pushToHFDataset(filePath, record, `Auto: breach data for ${item.domain}`);
+        if (ok) writtenRecords.push(record);
+    }
+
+    // Update the main index file (visible to Dataset Viewer)
+    if (writtenRecords.length > 0) {
+        await updateSearchIndex(writtenRecords);
+    }
+}
+
+// Maintain a visible search_history.jsonl for the HF Dataset Viewer
+async function updateSearchIndex(newRecords) {
+    try {
+        const hub = await getHFHub();
+        // Read existing index
+        let existing = [];
+        try {
+            const resp = await fetch(
+                `https://huggingface.co/datasets/${HF_DATASET_REPO}/resolve/main/search_history.jsonl?t=${Date.now()}`
+            );
+            if (resp.ok) {
+                const text = await resp.text();
+                existing = text.trim().split('\n').filter(Boolean).map(line => {
+                    try { return JSON.parse(line); } catch { return null; }
+                }).filter(Boolean);
+            }
+        } catch { /* first time */ }
+
+        // Add new records (flat rows for Dataset Viewer compatibility)
+        for (const rec of newRecords) {
+            for (const b of rec.breaches) {
+                existing.push({
+                    domain: rec.domain,
+                    checkedAt: rec.checkedAt,
+                    breachName: b.Name || b.name || '',
+                    breachTitle: b.Title || b.title || '',
+                    breachDate: b.BreachDate || b.breachDate || '',
+                    pwnCount: b.PwnCount || b.pwnCount || 0,
+                    dataClasses: (b.DataClasses || b.dataClasses || []).join(', '),
+                    description: (b.Description || b.description || '').substring(0, 300)
+                });
+            }
+        }
+
+        // Write as JSONL (one JSON object per line — HF Dataset Viewer reads this natively)
+        const jsonl = existing.map(r => JSON.stringify(r)).join('\n') + '\n';
+        await hub.uploadFile({
+            repo: { type: 'dataset', name: HF_DATASET_REPO },
+            credentials: { accessToken: HF_TOKEN },
+            file: { path: 'search_history.jsonl', content: new Blob([jsonl]) },
+            commitTitle: `Update search history (+${newRecords.length} domains)`
+        });
+        console.log(`[HF] Updated search_history.jsonl (${existing.length} total rows)`);
+    } catch (e) {
+        console.log(`[HF] Failed to update search index: ${e.message}`);
     }
 }
 
