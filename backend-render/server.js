@@ -253,10 +253,6 @@ async function fetchRssItems() {
     return allItems;
 }
 
-    setCache(cacheKey, allItems);
-    return allItems;
-}
-
 function matchItems(items, keywords) {
     const kw = keywords.map(k => k.toLowerCase()).filter(k => k.length >= 3);
     if (kw.length === 0) return [];
