@@ -12,6 +12,7 @@ const fetch = require('node-fetch');
 const crypto = require('crypto');
 const path = require('path');
 const { XMLParser } = require('fast-xml-parser');
+const net = require('net');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -201,6 +202,52 @@ function buildKeywords(query, type) {
     return [raw];
 }
 
+function isPrivateIp(ip) {
+    if (!ip || net.isIP(ip) === 0) return false;
+    const parts = ip.split('.').map(p => parseInt(p, 10));
+    if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return false;
+    if (parts[0] === 10) return true;
+    if (parts[0] === 127) return true;
+    if (parts[0] === 0) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    return false;
+}
+
+function isBlockedHostname(hostname) {
+    const host = String(hostname || '').toLowerCase();
+    if (!host) return true;
+    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return true;
+    if (host === '::1') return true;
+    if (net.isIP(host)) return isPrivateIp(host);
+    return false;
+}
+
+function stripHtml(html) {
+    const cleaned = String(html || '')
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleaned;
+}
+
+function extractMeta(html) {
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : '';
+
+    const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+    const ogDesc = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+    const desc = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+
+    return {
+        title: ogTitle ? ogTitle[1].trim() : title,
+        description: ogDesc ? ogDesc[1].trim() : (desc ? desc[1].trim() : '')
+    };
+}
+
 function normalizeItems(feedName, data) {
     // RSS 2.0: data.rss.channel.item
     const rssItems = data && data.rss && data.rss.channel && data.rss.channel.item;
@@ -376,6 +423,62 @@ app.get('/api/reports/unverified/:query', async (req, res) => {
 
         setCache(cacheKey, payload);
         return res.json(payload);
+    } catch (error) {
+        return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
+    }
+});
+
+// Manual URL scan for unverified security mentions
+app.get('/api/reports/unverified-url', async (req, res) => {
+    const target = String(req.query.url || '').trim();
+    const keywordParam = String(req.query.keyword || '').trim();
+
+    if (!target) {
+        return res.status(400).json({ error: 'URL inválida' });
+    }
+
+    let parsed;
+    try {
+        parsed = new URL(target);
+    } catch {
+        return res.status(400).json({ error: 'URL inválida' });
+    }
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return res.status(400).json({ error: 'Apenas http/https são permitidos' });
+    }
+
+    if (isBlockedHostname(parsed.hostname)) {
+        return res.status(400).json({ error: 'Hostname bloqueado' });
+    }
+
+    const keywords = keywordParam
+        ? keywordParam.split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
+        : buildKeywords(target, 'url');
+
+    try {
+        const resPage = await fetchWithTimeout(target, { method: 'GET' }, 15000);
+        if (!resPage.ok) {
+            return res.status(resPage.status).json({ error: 'Falha ao buscar a pagina', status: resPage.status });
+        }
+
+        const html = await resPage.text();
+        const meta = extractMeta(html);
+        const text = stripHtml(html).slice(0, 4000);
+        const hay = `${meta.title} ${meta.description} ${text}`.toLowerCase();
+
+        const matchedKeywords = keywords.filter(k => hay.includes(k));
+        const matchedSignals = SECURITY_TERMS.filter(t => hay.includes(t));
+
+        return res.json({
+            url: target,
+            title: meta.title,
+            description: meta.description,
+            matched: matchedKeywords.length > 0,
+            matchedKeywords,
+            matchedSignals,
+            classification: matchedSignals.length > 0 ? 'security_signals' : (matchedKeywords.length > 0 ? 'keyword_only' : 'no_match')
+        });
     } catch (error) {
         return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
     }
