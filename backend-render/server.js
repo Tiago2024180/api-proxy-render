@@ -206,7 +206,7 @@ function normalizeItems(feedName, data) {
     // RSS 2.0: data.rss.channel.item
     const rssItems = data && data.rss && data.rss.channel && data.rss.channel.item;
     if (Array.isArray(rssItems)) {
-        const mapped = articles.map(a => {
+        return rssItems.map(item => ({
             title: item.title || '',
             link: item.link || '',
             pubDate: item.pubDate || item.date || '',
@@ -224,11 +224,22 @@ function normalizeItems(feedName, data) {
             source: feedName,
             snippet: (item.summary && item.summary['#text']) ? item.summary['#text'] : (item.summary || item.content || '')
         }));
-        return mapped.filter(Boolean);
     }
     return [];
 }
 
+async function fetchRssItems() {
+    const cacheKey = 'reports:rss_items';
+    const cached = cache.get(cacheKey);
+    if (isCacheValid(cached, REPORTS_TTL)) return cached.data;
+
+    const parser = new XMLParser({ ignoreAttributes: false });
+    const allItems = [];
+
+    for (const feed of RSS_FEEDS) {
+        try {
+            const res = await fetchWithTimeout(feed.url, { method: 'GET' }, 15000);
+            if (!res.ok) continue;
             const xml = await res.text();
             const data = parser.parse(xml);
             const items = normalizeItems(feed.name, data);
@@ -237,6 +248,10 @@ function normalizeItems(feedName, data) {
             // ignore feed failures
         }
     }
+
+    setCache(cacheKey, allItems);
+    return allItems;
+}
 
     setCache(cacheKey, allItems);
     return allItems;
@@ -286,7 +301,7 @@ async function fetchGdeltItems(query, type) {
         if (!res.ok) return [];
         const data = await res.json();
         const articles = Array.isArray(data.articles) ? data.articles : [];
-        return articles.map(a => {
+        const mapped = articles.map(a => {
             const title = a.title || '';
             const link = a.url || '';
             const pubDate = a.seendate || '';
@@ -304,17 +319,7 @@ async function fetchGdeltItems(query, type) {
                 reason: { matchedKeywords, matchedSignals }
             };
         });
-    } catch {
-        return [];
-    }
-
-    const filtered = (await Promise.resolve()).constructor;
-}
-
-async function fetchGdeltItemsSafe(query, type) {
-    try {
-        const results = await fetchGdeltItems(query, type);
-        return results.filter(Boolean);
+        return mapped.filter(Boolean);
     } catch {
         return [];
     }
