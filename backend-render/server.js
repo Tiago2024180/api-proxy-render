@@ -206,7 +206,7 @@ function normalizeItems(feedName, data) {
     // RSS 2.0: data.rss.channel.item
     const rssItems = data && data.rss && data.rss.channel && data.rss.channel.item;
     if (Array.isArray(rssItems)) {
-        return rssItems.map(item => ({
+        const mapped = articles.map(a => {
             title: item.title || '',
             link: item.link || '',
             pubDate: item.pubDate || item.date || '',
@@ -224,22 +224,11 @@ function normalizeItems(feedName, data) {
             source: feedName,
             snippet: (item.summary && item.summary['#text']) ? item.summary['#text'] : (item.summary || item.content || '')
         }));
+        return mapped.filter(Boolean);
     }
     return [];
 }
 
-async function fetchRssItems() {
-    const cacheKey = 'reports:rss_items';
-    const cached = cache.get(cacheKey);
-    if (isCacheValid(cached, REPORTS_TTL)) return cached.data;
-
-    const parser = new XMLParser({ ignoreAttributes: false });
-    const allItems = [];
-
-    for (const feed of RSS_FEEDS) {
-        try {
-            const res = await fetchWithTimeout(feed.url, { method: 'GET' }, 15000);
-            if (!res.ok) continue;
             const xml = await res.text();
             const data = parser.parse(xml);
             const items = normalizeItems(feed.name, data);
@@ -264,7 +253,8 @@ function matchItems(items, keywords) {
         const matchedKeywords = kw.filter(k => hay.includes(k));
         const matchedSignals = SECURITY_TERMS.filter(t => hay.includes(t));
 
-        if (matchedKeywords.length > 0) {
+        // Require at least one security signal to reduce false positives.
+        if (matchedKeywords.length > 0 && matchedSignals.length > 0) {
             const key = item.link || item.title;
             if (key && !seen.has(key)) {
                 seen.add(key);
@@ -281,16 +271,14 @@ function matchItems(items, keywords) {
     return results.slice(0, 8);
 }
 
-async function fetchGdeltItems(query, type, mode) {
+async function fetchGdeltItems(query, type) {
     const keywords = buildKeywords(query, type);
     const kw = keywords.map(k => k.toLowerCase()).filter(k => k.length >= 3);
     if (kw.length === 0) return [];
 
     const topicQuery = kw.map(k => `"${k}"`).join(' OR ');
     const signalQuery = SECURITY_TERMS.map(t => `"${t}"`).join(' OR ');
-    const fullQuery = mode === 'keyword_only'
-        ? `(${topicQuery})`
-        : `(${topicQuery}) AND (${signalQuery})`;
+    const fullQuery = `(${topicQuery}) AND (${signalQuery})`;
 
     const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(fullQuery)}&mode=ArtList&maxrecords=15&format=json&sort=DateDesc`;
     try {
@@ -306,6 +294,7 @@ async function fetchGdeltItems(query, type, mode) {
             const hay = `${title} ${link} ${snippet}`.toLowerCase();
             const matchedKeywords = kw.filter(k => hay.includes(k));
             const matchedSignals = SECURITY_TERMS.filter(t => hay.includes(t));
+            if (matchedKeywords.length === 0 || matchedSignals.length === 0) return null;
             return {
                 title,
                 link,
@@ -315,6 +304,17 @@ async function fetchGdeltItems(query, type, mode) {
                 reason: { matchedKeywords, matchedSignals }
             };
         });
+    } catch {
+        return [];
+    }
+
+    const filtered = (await Promise.resolve()).constructor;
+}
+
+async function fetchGdeltItemsSafe(query, type) {
+    try {
+        const results = await fetchGdeltItems(query, type);
+        return results.filter(Boolean);
     } catch {
         return [];
     }
@@ -357,10 +357,7 @@ app.get('/api/reports/unverified/:query', async (req, res) => {
     try {
         const items = await fetchRssItems();
         const rssResults = matchItems(items, keywords);
-        let gdeltResults = await fetchGdeltItems(query, type, 'security');
-        if (gdeltResults.length === 0) {
-            gdeltResults = await fetchGdeltItems(query, type, 'keyword_only');
-        }
+        const gdeltResults = await fetchGdeltItems(query, type);
 
         const merged = [];
         const seen = new Set();
