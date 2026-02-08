@@ -125,18 +125,9 @@
                 </div>
 
                 <div class="card rounded-2xl p-8">
-                    <h2 class="text-2xl font-bold mb-6"><i class="fas fa-newspaper mr-3"></i>Manual News URL Check</h2>
-                    <p class="mb-4 opacity-90">Paste a news URL to scan for unverified security mentions (breach, hack, ransomware, etc.).</p>
-                    <div class="mb-3">
-                        <input type="url" id="newsUrlInput" placeholder="https://example.com/news/article" class="w-full p-4 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    </div>
-                    <div class="mb-4">
-                        <input type="text" id="newsKeywordInput" placeholder="Optional keywords (comma separated)" class="w-full p-3 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    </div>
-                    <button id="newsUrlCheckBtn" class="w-full bg-amber-600 hover:bg-amber-700 py-3 rounded-xl font-semibold transition duration-200">
-                        <i class="fas fa-search mr-2"></i>Scan News URL
-                    </button>
-                    <div id="newsUrlResults" class="text-sm opacity-90 mt-4"></div>
+                    <h2 class="text-2xl font-bold mb-6"><i class="fas fa-newspaper mr-3"></i>Unverified News Signals</h2>
+                    <p class="mb-2 opacity-90">We look for mentions in major news and global indexes (RSS + GDELT). These are not confirmed breaches.</p>
+                    <p class="text-sm opacity-80">If an article isn’t indexed by these sources, it won’t appear automatically.</p>
                 </div>
             </div>
         </div>
@@ -238,10 +229,6 @@
         const passwordInput = document.getElementById('passwordInput');
         const passwordCheckBtn = document.getElementById('passwordCheckBtn');
         const passwordResults = document.getElementById('passwordResults');
-        const newsUrlInput = document.getElementById('newsUrlInput');
-        const newsKeywordInput = document.getElementById('newsKeywordInput');
-        const newsUrlCheckBtn = document.getElementById('newsUrlCheckBtn');
-        const newsUrlResults = document.getElementById('newsUrlResults');
         const passwordUnverified = document.getElementById('passwordUnverified');
 
         const API_BASE = '';
@@ -327,29 +314,6 @@
             }
         }
 
-        async function checkNewsUrl(url, keywords) {
-            const value = (url || '').trim();
-            if (!value) return { error: 'Please enter a URL.' };
-            try {
-                newsUrlResults.innerHTML = '<div class="opacity-80">Scanning URL...</div>';
-                const params = new URLSearchParams({ url: value });
-                const kw = (keywords || '').trim();
-                if (kw) params.set('keyword', kw);
-                const { ok, status, body } = await requestApi(`${API_BASE}/api/reports/unverified-url?${params.toString()}`,
-                    { method: 'GET', headers: { 'Accept': 'application/json' } },
-                    { timeoutMs: 20000, retries: 1 }
-                );
-
-                if (!ok) {
-                    const msg = (body.kind === 'json' && body.value && body.value.error) ? body.value.error : (body.rawText || 'Erro desconhecido');
-                    return { error: `Erro ${status}: ${msg}` };
-                }
-
-                return body.kind === 'json' ? body.value : { error: 'Resposta invalida' };
-            } catch (e) {
-                return { error: `Erro de conexão: ${e.message}` };
-            }
-        }
 
         async function fetchWithTimeout(url, options = {}, timeoutMs = 25000) {
             const controller = new AbortController();
@@ -845,35 +809,6 @@
             }
         });
 
-        newsUrlCheckBtn.addEventListener('click', async () => {
-            newsUrlCheckBtn.disabled = true;
-            const old = newsUrlCheckBtn.innerHTML;
-            newsUrlCheckBtn.innerHTML = '<i class="fas fa-spinner animate-spin mr-2"></i>Scanning';
-            try {
-                const result = await checkNewsUrl(newsUrlInput.value, newsKeywordInput.value);
-                if (result.error) {
-                    newsUrlResults.innerHTML = `<div class="text-red-300">${result.error}</div>`;
-                    return;
-                }
-
-                if (!result.matched) {
-                    newsUrlResults.innerHTML = '<div class="text-green-300">No security-related mentions found on that page.</div>';
-                    return;
-                }
-
-                const mk = Array.isArray(result.matchedKeywords) ? result.matchedKeywords.join(', ') : '';
-                const ms = Array.isArray(result.matchedSignals) ? result.matchedSignals.join(', ') : '';
-                newsUrlResults.innerHTML = `
-                    <div class="text-yellow-200">Unverified mention found.</div>
-                    <div class="text-xs opacity-80 mt-1">Matched keyword(s): ${mk || 'n/a'}</div>
-                    <div class="text-xs opacity-80">Signals: ${ms || 'n/a'}</div>
-                    <div class="text-xs opacity-70 mt-2">Title: ${result.title || 'n/a'}</div>
-                `;
-            } finally {
-                newsUrlCheckBtn.disabled = false;
-                newsUrlCheckBtn.innerHTML = old;
-            }
-        });
 
         // Load dataset status on page load
         setTimeout(() => {
