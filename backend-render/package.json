@@ -1,15 +1,16 @@
 {
   "name": "hibp-proxy-backend",
-  "version": "1.2.0",
-  "description": "Backend proxy for Have I Been Pwned API",
+  "version": "1.3.0",
+  "description": "Backend proxy for Have I Been Pwned API with Hugging Face AI integration",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "@huggingface/hub": "^2.8.1",
     "cors": "^2.8.5",
+    "express": "^4.18.2",
     "fast-xml-parser": "^5.3.5",
     "node-fetch": "^2.7.0"
   },

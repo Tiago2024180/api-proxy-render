@@ -33,6 +33,26 @@ try {
 // Accept both names to avoid env-var mismatch between environments.
 const HIBP_API_KEY = process.env.HIBP_API_KEY || process.env.HIBP_KEY;
 
+// Hugging Face configuration
+const HF_TOKEN = process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN || '';
+const HF_DATASET_REPO = process.env.HF_DATASET_REPO || 'Tiago2024180/eyewebdataset';
+const HF_MODEL = 'facebook/bart-large-mnli';
+const HF_CLASSIFICATION_LABELS = [
+    'cybersecurity data breach',
+    'hacking or cyber attack',
+    'ransomware or malware attack',
+    'phishing or social engineering',
+    'security vulnerability or exploit',
+    'unrelated to cybersecurity'
+];
+
+// Dynamic import helper for @huggingface/hub (ESM package)
+let _hfHub = null;
+async function getHFHub() {
+    if (!_hfHub) _hfHub = await import('@huggingface/hub');
+    return _hfHub;
+}
+
 // Middleware
 // CORS: allow requests from FRONTEND_URL (can be comma-separated list).
 // Also allow Vercel/Render hosts to avoid cross-origin failures when using direct Render fallback.
@@ -444,6 +464,174 @@ async function fetchBingNewsItems(query, type) {
     }
 }
 
+// ============ Hugging Face AI Classification ============
+async function classifyWithHF(text) {
+    if (!HF_TOKEN || !text) return null;
+    try {
+        const res = await fetchWithTimeout(
+            `https://api-inference.huggingface.co/models/${HF_MODEL}`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${HF_TOKEN}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    inputs: text.substring(0, 512),
+                    parameters: { candidate_labels: HF_CLASSIFICATION_LABELS }
+                })
+            },
+            12000
+        );
+        if (!res.ok) {
+            // Model might be loading (503) – return null gracefully
+            return null;
+        }
+        const data = await res.json();
+        if (!data || !Array.isArray(data.labels)) return null;
+
+        // Calculate aggregate security relevance score
+        const secLabels = HF_CLASSIFICATION_LABELS.filter(l => l !== 'unrelated to cybersecurity');
+        let securityScore = 0;
+        secLabels.forEach(label => {
+            const idx = data.labels.indexOf(label);
+            if (idx >= 0) securityScore += data.scores[idx];
+        });
+
+        // Top predicted label
+        const topLabel = data.labels[0];
+        const topScore = data.scores[0];
+
+        return {
+            topLabel,
+            topScore: Math.round(topScore * 100),
+            securityScore: Math.round(securityScore * 100),
+            isSecurityRelated: topLabel !== 'unrelated to cybersecurity' && securityScore > 0.45
+        };
+    } catch {
+        return null;
+    }
+}
+
+async function classifyArticles(articles) {
+    if (!HF_TOKEN || articles.length === 0) return articles;
+
+    // Classify top N articles in parallel (limit concurrency)
+    const maxClassify = Math.min(articles.length, 10);
+    const toClassify = articles.slice(0, maxClassify);
+
+    const results = await Promise.allSettled(
+        toClassify.map(a => classifyWithHF(a.title || ''))
+    );
+
+    results.forEach((result, i) => {
+        if (result.status === 'fulfilled' && result.value) {
+            toClassify[i].aiClassification = result.value;
+        }
+    });
+
+    // Sort: AI-classified security articles first (by score), then unclassified
+    articles.sort((a, b) => {
+        const aScore = a.aiClassification ? a.aiClassification.securityScore : -1;
+        const bScore = b.aiClassification ? b.aiClassification.securityScore : -1;
+        return bScore - aScore;
+    });
+
+    return articles;
+}
+
+// ============ Hugging Face Dataset – Read ============
+async function fetchHFDatasetBreaches(domain) {
+    const rootDomain = getRootDomain(domain);
+    const brand = rootDomain.split('.')[0];
+    const possiblePaths = [
+        `breaches/${rootDomain}.json`,
+        `breaches/${brand}.json`,
+        `datasets/breaches-${rootDomain}.json`
+    ];
+
+    for (const filePath of possiblePaths) {
+        try {
+            const url = `https://huggingface.co/datasets/${HF_DATASET_REPO}/resolve/main/${filePath}?t=${Date.now()}`;
+            const res = await fetchWithTimeout(url, { method: 'GET' }, 8000);
+            if (res.ok) {
+                const data = await res.json();
+                return { found: true, path: filePath, data };
+            }
+        } catch { /* continue */ }
+    }
+    return { found: false };
+}
+
+// ============ Hugging Face Dataset – Write ============
+const hfWriteBuffer = [];
+let hfWriteTimer = null;
+
+async function pushToHFDataset(filePath, jsonData, commitMessage) {
+    if (!HF_TOKEN) return false;
+    try {
+        const { uploadFile } = await getHFHub();
+        const content = JSON.stringify(jsonData, null, 2);
+        await uploadFile({
+            repo: { type: 'dataset', name: HF_DATASET_REPO },
+            credentials: { accessToken: HF_TOKEN },
+            file: { path: filePath, content: new Blob([content]) },
+            commitTitle: commitMessage || `Auto-update: ${filePath}`
+        });
+        console.log(`[HF] Pushed ${filePath}`);
+        return true;
+    } catch (e) {
+        console.log(`[HF] Push failed for ${filePath}: ${e.message}`);
+        return false;
+    }
+}
+
+function queueHFWrite(domain, record) {
+    if (!HF_TOKEN) return;
+    hfWriteBuffer.push({ domain, record, timestamp: new Date().toISOString() });
+
+    // Flush every 5 records or after 2 minutes
+    if (hfWriteBuffer.length >= 5) {
+        flushHFWrites();
+    } else if (!hfWriteTimer) {
+        hfWriteTimer = setTimeout(flushHFWrites, 120000);
+    }
+}
+
+async function flushHFWrites() {
+    if (hfWriteTimer) { clearTimeout(hfWriteTimer); hfWriteTimer = null; }
+    if (hfWriteBuffer.length === 0) return;
+
+    const batch = hfWriteBuffer.splice(0);
+    console.log(`[HF] Flushing ${batch.length} breach records to dataset...`);
+
+    for (const item of batch) {
+        const filePath = `breaches/${item.domain}.json`;
+        await pushToHFDataset(filePath, item.record, `Auto: breach data for ${item.domain}`);
+    }
+}
+
+// ============ HF Breach dataset endpoint ============
+app.get('/api/hf/breaches/:domain', async (req, res) => {
+    const domain = normalizeDomainOrUrl(req.params.domain);
+    if (!domain) return res.status(400).json({ error: 'Invalid domain' });
+
+    const cacheKey = `hf:breaches:${domain}`;
+    const cached = cache.get(cacheKey);
+    if (isCacheValid(cached, REPORTS_TTL)) {
+        return res.json(cached.data);
+    }
+
+    const result = await fetchHFDatasetBreaches(domain);
+    const payload = {
+        domain,
+        datasetRepo: HF_DATASET_REPO,
+        ...result
+    };
+    setCache(cacheKey, payload);
+    return res.json(payload);
+});
+
 // Health check
 app.get('/', (req, res) => {
     res.json({
@@ -456,9 +644,13 @@ app.get('/', (req, res) => {
             getBreaches: 'GET /api/hibp/breaches',
             checkDomain: 'GET /api/hibp/domain/:domainOrUrl',
             checkPassword: 'POST /api/hibp/password',
-            unverifiedReports: 'GET /api/reports/unverified/:query?type=email|domain|url'
+            unverifiedReports: 'GET /api/reports/unverified/:query?type=email|domain|url',
+            hfBreaches: 'GET /api/hf/breaches/:domain'
         },
-        apiKeyConfigured: !!HIBP_API_KEY
+        apiKeyConfigured: !!HIBP_API_KEY,
+        hfConfigured: !!HF_TOKEN,
+        hfDatasetRepo: HF_DATASET_REPO,
+        hfModel: HF_MODEL
     });
 });
 
@@ -504,15 +696,27 @@ app.get('/api/reports/unverified/:query', async (req, res) => {
             }
         }
 
+        // AI classification via Hugging Face Inference API (if token configured)
+        const aiEnabled = !!HF_TOKEN;
+        if (aiEnabled) {
+            try {
+                await classifyArticles(merged);
+            } catch (e) {
+                console.log(`[HF] AI classification failed: ${e.message}`);
+            }
+        }
+
         const payload = {
             query,
             type,
             keywords,
+            aiEnabled,
             sourcesSearched: {
                 googleNews: google.length,
                 bingNews: bing.length,
                 gdelt: gdelt.length,
-                securityRSS: rss.length
+                securityRSS: rss.length,
+                huggingFaceAI: aiEnabled
             },
             totalResults: merged.length,
             results: merged.slice(0, 20)
@@ -607,6 +811,22 @@ app.get('/api/hibp/domain/:domainOrUrl', async (req, res) => {
 
         const breaches = await response.json();
         setCache(cacheKey, { status: 200, data: breaches });
+
+        // Queue breach data to HF dataset (async, fire-and-forget)
+        if (breaches.length > 0) {
+            queueHFWrite(domain, {
+                domain,
+                checkedAt: new Date().toISOString(),
+                breachCount: breaches.length,
+                breaches: breaches.map(b => ({
+                    name: b.Name || b.name,
+                    breachDate: b.BreachDate || b.breachDate,
+                    pwnCount: b.PwnCount || b.pwnCount,
+                    dataClasses: b.DataClasses || b.dataClasses || []
+                }))
+            });
+        }
+
         return res.json(breaches);
     } catch (error) {
         return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
