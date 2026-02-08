@@ -544,7 +544,10 @@ async function classifyArticles(articles) {
 async function fetchHFDatasetBreaches(domain) {
     const rootDomain = getRootDomain(domain);
     const brand = rootDomain.split('.')[0];
+    // Look in .autochecks (hidden from HF dataset parser) and legacy paths
     const possiblePaths = [
+        `.autochecks/${rootDomain}.json`,
+        `.autochecks/${brand}.json`,
         `breaches/${rootDomain}.json`,
         `breaches/${brand}.json`,
         `datasets/breaches-${rootDomain}.json`
@@ -586,9 +589,9 @@ async function pushToHFDataset(filePath, jsonData, commitMessage) {
     }
 }
 
-function queueHFWrite(domain, record) {
+function queueHFWrite(domain, breaches) {
     if (!HF_TOKEN) return;
-    hfWriteBuffer.push({ domain, record, timestamp: new Date().toISOString() });
+    hfWriteBuffer.push({ domain, breaches, timestamp: new Date().toISOString() });
 
     // Flush every 5 records or after 2 minutes
     if (hfWriteBuffer.length >= 5) {
@@ -606,8 +609,16 @@ async function flushHFWrites() {
     console.log(`[HF] Flushing ${batch.length} breach records to dataset...`);
 
     for (const item of batch) {
-        const filePath = `breaches/${item.domain}.json`;
-        await pushToHFDataset(filePath, item.record, `Auto: breach data for ${item.domain}`);
+        // Store in .autochecks/ (dot-prefix hides from HF dataset parser, avoids schema conflicts)
+        const filePath = `.autochecks/${item.domain}.json`;
+        // Write metadata wrapper — NOT mixed into main dataset table
+        const record = {
+            domain: item.domain,
+            checkedAt: item.timestamp,
+            breachCount: item.breaches.length,
+            breaches: item.breaches
+        };
+        await pushToHFDataset(filePath, record, `Auto: breach data for ${item.domain}`);
     }
 }
 
@@ -813,18 +824,9 @@ app.get('/api/hibp/domain/:domainOrUrl', async (req, res) => {
         setCache(cacheKey, { status: 200, data: breaches });
 
         // Queue breach data to HF dataset (async, fire-and-forget)
+        // Store raw HIBP objects to keep schema consistent with main dataset
         if (breaches.length > 0) {
-            queueHFWrite(domain, {
-                domain,
-                checkedAt: new Date().toISOString(),
-                breachCount: breaches.length,
-                breaches: breaches.map(b => ({
-                    name: b.Name || b.name,
-                    breachDate: b.BreachDate || b.breachDate,
-                    pwnCount: b.PwnCount || b.pwnCount,
-                    dataClasses: b.DataClasses || b.dataClasses || []
-                }))
-            });
+            queueHFWrite(domain, breaches);
         }
 
         return res.json(breaches);
