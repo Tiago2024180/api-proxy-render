@@ -228,6 +228,38 @@ function normalizeItems(feedName, data) {
     return [];
 }
 
+function normalizeGoogleNewsItems(data) {
+    let rssItems = data && data.rss && data.rss.channel && data.rss.channel.item;
+    if (!rssItems) return [];
+    if (!Array.isArray(rssItems)) rssItems = [rssItems];
+
+    return rssItems.map(item => {
+        let link = item.link || '';
+        let sourceName = 'Google News';
+
+        // Google News uses <source url="https://...">Source Name</source>
+        if (item.source) {
+            if (typeof item.source === 'object') {
+                sourceName = item.source['#text'] || sourceName;
+                const srcUrl = item.source['@_url'];
+                if (srcUrl) link = srcUrl;
+            } else {
+                sourceName = String(item.source);
+            }
+        }
+
+        let title = String(item.title || '');
+        // Google News appends " - Source Name"; strip it for cleanliness
+        const lastDash = title.lastIndexOf(' - ');
+        if (lastDash > 10) title = title.substring(0, lastDash).trim();
+
+        const rawDesc = String(item.description || '');
+        const snippet = rawDesc.replace(/<[^>]+>/g, '').substring(0, 400);
+
+        return { title, link, pubDate: item.pubDate || '', source: sourceName, snippet };
+    });
+}
+
 async function fetchRssItems() {
     const cacheKey = 'reports:rss_items';
     const cached = cache.get(cacheKey);
@@ -321,6 +353,97 @@ async function fetchGdeltItems(query, type) {
     }
 }
 
+// ---------- Google News RSS search (free, massive index) ----------
+async function fetchGoogleNewsItems(query, type) {
+    const keywords = buildKeywords(query, type);
+    const brand = keywords.length > 0 ? keywords[keywords.length - 1] : '';
+    if (!brand || brand.length < 2) return [];
+
+    const secTerms = ['breach', 'hack', '"data leak"', 'ransomware', 'phishing',
+                      '"cyber attack"', 'vulnerability', 'malware', 'exposed'];
+    const orClause = secTerms.join(' OR ');
+    const searchQuery = `"${brand}" (${orClause})`;
+
+    const urls = [
+        `https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=en-US&gl=US&ceid=US:en`,
+        `https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=pt-PT&gl=PT&ceid=PT:pt`
+    ];
+
+    const parser = new XMLParser({ ignoreAttributes: false });
+    const allItems = [];
+
+    for (const url of urls) {
+        try {
+            const res = await fetchWithTimeout(url, {
+                method: 'GET',
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; DataBreachChecker/2.0)' }
+            }, 15000);
+            if (!res.ok) continue;
+            const xml = await res.text();
+            const data = parser.parse(xml);
+            allItems.push(...normalizeGoogleNewsItems(data));
+        } catch { /* ignore */ }
+    }
+
+    const kw = keywords.map(k => k.toLowerCase()).filter(k => k.length >= 2);
+    const seen = new Set();
+    return allItems.filter(item => {
+        const hay = `${item.title} ${item.snippet}`.toLowerCase();
+        const key = (item.link || item.title).toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return kw.some(k => hay.includes(k));
+    }).map(item => {
+        const hay = `${item.title} ${item.snippet}`.toLowerCase();
+        return {
+            ...item,
+            reason: {
+                matchedKeywords: kw.filter(k => hay.includes(k)),
+                matchedSignals: SECURITY_TERMS.filter(t => hay.includes(t))
+            }
+        };
+    }).slice(0, 15);
+}
+
+// ---------- Bing News RSS search (free, good coverage) ----------
+async function fetchBingNewsItems(query, type) {
+    const keywords = buildKeywords(query, type);
+    const brand = keywords.length > 0 ? keywords[keywords.length - 1] : '';
+    if (!brand || brand.length < 2) return [];
+
+    const searchQuery = `${brand} data breach OR hack OR ransomware OR phishing OR vulnerability`;
+    const url = `https://www.bing.com/news/search?q=${encodeURIComponent(searchQuery)}&format=rss`;
+
+    const parser = new XMLParser({ ignoreAttributes: false });
+    try {
+        const res = await fetchWithTimeout(url, {
+            method: 'GET',
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; DataBreachChecker/2.0)' }
+        }, 15000);
+        if (!res.ok) return [];
+        const xml = await res.text();
+        const data = parser.parse(xml);
+        const items = normalizeItems('BingNews', data);
+
+        const kw = keywords.map(k => k.toLowerCase()).filter(k => k.length >= 2);
+        return items.filter(item => {
+            const hay = `${item.title} ${item.snippet}`.toLowerCase();
+            return kw.some(k => hay.includes(k));
+        }).map(item => {
+            const hay = `${item.title} ${item.snippet}`.toLowerCase();
+            return {
+                ...item,
+                reason: {
+                    matchedKeywords: kw.filter(k => hay.includes(k)),
+                    matchedSignals: SECURITY_TERMS.filter(t => hay.includes(t))
+                }
+            };
+        }).slice(0, 10);
+    } catch {
+        return [];
+    }
+}
+
 // Health check
 app.get('/', (req, res) => {
     res.json({
@@ -339,7 +462,7 @@ app.get('/', (req, res) => {
     });
 });
 
-// Unverified reports endpoint (news/RSS based, not breach databases)
+// Unverified reports endpoint – searches Google News, Bing News, GDELT & security RSS feeds
 app.get('/api/reports/unverified/:query', async (req, res) => {
     const { query } = req.params;
     const type = String(req.query.type || 'domain').toLowerCase();
@@ -356,14 +479,25 @@ app.get('/api/reports/unverified/:query', async (req, res) => {
     }
 
     try {
-        const items = await fetchRssItems();
-        const rssResults = matchItems(items, keywords);
-        const gdeltResults = await fetchGdeltItems(query, type);
+        // Fetch from all sources in parallel for speed
+        const [googleRes, bingRes, gdeltRes, rssRes] = await Promise.allSettled([
+            fetchGoogleNewsItems(query, type),
+            fetchBingNewsItems(query, type),
+            fetchGdeltItems(query, type),
+            fetchRssItems()
+        ]);
 
+        const google = googleRes.status === 'fulfilled' ? googleRes.value : [];
+        const bing   = bingRes.status === 'fulfilled'   ? bingRes.value   : [];
+        const gdelt  = gdeltRes.status === 'fulfilled'  ? gdeltRes.value  : [];
+        const rssAll = rssRes.status === 'fulfilled'     ? rssRes.value    : [];
+        const rss    = matchItems(rssAll, keywords);
+
+        // Merge & deduplicate – priority: Google → Bing → GDELT → RSS
         const merged = [];
         const seen = new Set();
-        for (const item of [...gdeltResults, ...rssResults]) {
-            const key = item.link || item.title;
+        for (const item of [...google, ...bing, ...gdelt, ...rss]) {
+            const key = (item.link || item.title || '').toLowerCase().replace(/[?#].*$/, '');
             if (key && !seen.has(key)) {
                 seen.add(key);
                 merged.push(item);
@@ -374,8 +508,14 @@ app.get('/api/reports/unverified/:query', async (req, res) => {
             query,
             type,
             keywords,
-            sources: [...RSS_FEEDS.map(f => f.name), 'GDELT'],
-            results: merged.slice(0, 10)
+            sourcesSearched: {
+                googleNews: google.length,
+                bingNews: bing.length,
+                gdelt: gdelt.length,
+                securityRSS: rss.length
+            },
+            totalResults: merged.length,
+            results: merged.slice(0, 20)
         };
 
         setCache(cacheKey, payload);

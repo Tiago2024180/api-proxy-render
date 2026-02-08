@@ -125,9 +125,18 @@
                 </div>
 
                 <div class="card rounded-2xl p-8">
-                    <h2 class="text-2xl font-bold mb-6"><i class="fas fa-newspaper mr-3"></i>Unverified News Signals</h2>
-                    <p class="mb-2 opacity-90">We look for mentions in major news and global indexes (RSS + GDELT). These are not confirmed breaches.</p>
-                    <p class="text-sm opacity-80">If an article isn’t indexed by these sources, it won’t appear automatically.</p>
+                    <h2 class="text-2xl font-bold mb-6"><i class="fas fa-newspaper mr-3"></i>Cybersecurity News Search</h2>
+                    <p class="mb-2 opacity-90">When you check a domain, we also search <strong>Google News</strong>, <strong>Bing News</strong>, <strong>GDELT</strong> and <strong>12 security RSS feeds</strong> for related cybersecurity reports.</p>
+                    <p class="text-sm opacity-80">Results include breaches, hacks, ransomware, phishing and other security incidents reported by news outlets worldwide.</p>
+                    <div class="mt-4 flex flex-wrap gap-2">
+                        <span class="px-2 py-1 bg-gray-700 rounded text-xs">Google News</span>
+                        <span class="px-2 py-1 bg-gray-700 rounded text-xs">Bing News</span>
+                        <span class="px-2 py-1 bg-gray-700 rounded text-xs">GDELT</span>
+                        <span class="px-2 py-1 bg-gray-700 rounded text-xs">BleepingComputer</span>
+                        <span class="px-2 py-1 bg-gray-700 rounded text-xs">KrebsOnSecurity</span>
+                        <span class="px-2 py-1 bg-gray-700 rounded text-xs">TheHackerNews</span>
+                        <span class="px-2 py-1 bg-gray-700 rounded text-xs">+ more</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -274,36 +283,81 @@
             return t.startsWith('<!doctype html') || t.startsWith('<html') || t.startsWith('<');
         }
 
+        function escapeHtml(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML;
+        }
+
+        function formatNewsDate(raw) {
+            if (!raw) return '';
+            try {
+                const d = new Date(raw);
+                if (isNaN(d.getTime())) return String(raw).substring(0, 16);
+                return d.toLocaleDateString('pt-PT', { year: 'numeric', month: 'short', day: 'numeric' });
+            } catch { return String(raw).substring(0, 16); }
+        }
+
         function renderUnverified(container, title, payload) {
             if (!container) return;
             if (!payload || !Array.isArray(payload.results) || payload.results.length === 0) {
-                container.innerHTML = `<div class="text-xs opacity-70">Unverified reports: none found.</div>`;
+                const ss = payload && payload.sourcesSearched;
+                const stats = ss
+                    ? `Google News: ${ss.googleNews||0} | Bing: ${ss.bingNews||0} | GDELT: ${ss.gdelt||0} | RSS: ${ss.securityRSS||0}`
+                    : 'No data';
+                container.innerHTML = `
+                    <div class="mt-4 p-4 border border-gray-600/40 rounded-xl bg-gray-800/30">
+                        <div class="text-sm opacity-70"><i class="fas fa-newspaper mr-2"></i>No cybersecurity news found for this query.</div>
+                        <div class="text-xs opacity-50 mt-1">${stats}</div>
+                    </div>`;
                 return;
             }
 
-            const items = payload.results.map(r => {
-                const link = r.link ? `<a href="${r.link}" target="_blank" rel="noopener" class="text-yellow-300 hover:text-yellow-200 underline">${r.title || r.link}</a>` : (r.title || 'Unknown');
-                const meta = r.source ? `<span class="opacity-70">${r.source}</span>` : '';
-                const mk = r.reason && Array.isArray(r.reason.matchedKeywords) ? r.reason.matchedKeywords.join(', ') : '';
-                const ms = r.reason && Array.isArray(r.reason.matchedSignals) ? r.reason.matchedSignals.join(', ') : '';
-                const reason = (mk || ms) ? `<div class="text-xs opacity-70">Matched: ${[mk ? `keyword(s): ${mk}` : '', ms ? `signals: ${ms}` : ''].filter(Boolean).join(' | ')}</div>` : '';
-                return `<li class="mb-2">${link}<div class="text-xs opacity-70">${meta}${r.pubDate ? ` • ${r.pubDate}` : ''}</div>${reason}</li>`;
+            const cards = payload.results.map(r => {
+                const safeTitle = escapeHtml(r.title || 'View article');
+                const link = r.link
+                    ? `<a href="${r.link}" target="_blank" rel="noopener" class="text-blue-300 hover:text-blue-200 font-semibold hover:underline">${safeTitle}</a>`
+                    : safeTitle;
+                const sourceBadge = r.source
+                    ? `<span class="inline-block bg-gray-700 text-gray-200 text-xs px-2 py-0.5 rounded-full">${escapeHtml(r.source)}</span>`
+                    : '';
+                const date = r.pubDate ? `<span class="text-xs opacity-60">${formatNewsDate(r.pubDate)}</span>` : '';
+                const signals = (r.reason && r.reason.matchedSignals && r.reason.matchedSignals.length)
+                    ? r.reason.matchedSignals.map(s => `<span class="inline-block bg-red-900/50 text-red-300 text-xs px-2 py-0.5 rounded-full">${escapeHtml(s)}</span>`).join(' ')
+                    : '';
+                return `
+                    <div class="bg-gray-800/50 p-4 rounded-lg border border-gray-600/30 hover:border-yellow-500/40 transition-colors">
+                        <div class="mb-1">${link}</div>
+                        <div class="flex flex-wrap items-center gap-2 mt-2">${sourceBadge} ${date}</div>
+                        ${signals ? `<div class="flex flex-wrap gap-1 mt-2">${signals}</div>` : ''}
+                    </div>`;
             }).join('');
 
+            const ss = payload.sourcesSearched;
+            const stats = ss
+                ? `<span class="text-xs opacity-50">Google News: ${ss.googleNews||0} | Bing: ${ss.bingNews||0} | GDELT: ${ss.gdelt||0} | RSS: ${ss.securityRSS||0}</span>`
+                : '';
+            const total = payload.totalResults || payload.results.length;
+
             container.innerHTML = `
-                <div class="mt-2 p-4 border border-yellow-500/40 rounded-xl bg-yellow-900/20">
-                    <div class="font-semibold text-yellow-200 mb-2">${title} (Unverified sources)</div>
-                    <ul class="list-disc ml-6">${items}</ul>
-                    <div class="text-xs opacity-70 mt-2">These are news/rumor reports and may be inaccurate.</div>
-                </div>
-            `;
+                <div class="mt-6 p-5 border border-yellow-500/30 rounded-xl bg-yellow-900/10">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="font-bold text-lg text-yellow-200"><i class="fas fa-newspaper mr-2"></i>${escapeHtml(title)}</div>
+                        <span class="text-xs bg-yellow-900/50 text-yellow-300 px-2 py-1 rounded-full">${total} found</span>
+                    </div>
+                    <div class="space-y-3">${cards}</div>
+                    <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+                        ${stats}
+                        <span class="text-xs opacity-50">News reports – not confirmed breaches</span>
+                    </div>
+                </div>`;
         }
 
         async function fetchUnverifiedReports(query, type) {
             if (!query) return null;
             try {
                 const path = `/api/reports/unverified/${encodeURIComponent(query)}?type=${encodeURIComponent(type)}`;
-                const { ok, status, body } = await requestApi(`${API_BASE}${path}`, { method: 'GET', headers: { 'Accept': 'application/json' } }, { timeoutMs: 20000, retries: 1 });
+                const { ok, status, body } = await requestApiWithFallback(path, { method: 'GET', headers: { 'Accept': 'application/json' } }, { timeoutMs: 30000, retries: 1 });
                 if (!ok) {
                     const msg = (body.kind === 'json' && body.value && body.value.error) ? body.value.error : (body.rawText || 'Erro desconhecido');
                     return { error: `Erro ${status}: ${msg}`, results: [] };
@@ -767,18 +821,22 @@
                 const result = await checkDomain(domainInput.value);
                 if (result.error) {
                     domainResults.innerHTML = `<div class="text-red-300">${result.error}</div>`;
+                    domainUnverified.innerHTML = '';
                     return;
                 }
                 if (!result.breaches || result.breaches.length === 0) {
-                    domainResults.innerHTML = '<div class="text-green-300">No breaches found for this domain.</div>';
-                    return;
+                    domainResults.innerHTML = '<div class="text-green-300">No breaches found for this domain (HIBP).</div>';
+                } else {
+                    const list = result.breaches.slice(0, 8).map(b => `<li><strong>${b.Name || b.Title || 'Unknown'}</strong> (${b.BreachDate || 'n/a'})</li>`).join('');
+                    const extra = result.breaches.length > 8 ? `<div class="opacity-70 mt-2">+${result.breaches.length - 8} more</div>` : '';
+                    domainResults.innerHTML = `<div class="text-yellow-200">Found ${result.breaches.length} breach(es) in HIBP:</div><ul class="list-disc ml-6 mt-2">${list}</ul>${extra}`;
                 }
-                const list = result.breaches.slice(0, 8).map(b => `<li><strong>${b.Name || b.Title || 'Unknown'}</strong> (${b.BreachDate || 'n/a'})</li>`).join('');
-                const extra = result.breaches.length > 8 ? `<div class="opacity-70 mt-2">+${result.breaches.length - 8} more</div>` : '';
-                domainResults.innerHTML = `<div class="text-yellow-200">Found ${result.breaches.length} breach(es):</div><ul class="list-disc ml-6 mt-2">${list}</ul>${extra}`;
+
+                // Always search news regardless of HIBP results
+                domainUnverified.innerHTML = '<div class="mt-4 text-sm opacity-70"><i class="fas fa-spinner animate-spin mr-2"></i>Searching Google News, Bing News, GDELT & security feeds\u2026</div>';
                 const query = (domainInput.value || '').trim();
                 const unverified = await fetchUnverifiedReports(query, 'domain');
-                renderUnverified(domainUnverified, 'Related news reports', unverified);
+                renderUnverified(domainUnverified, 'Cybersecurity News', unverified);
             } finally {
                 domainCheckBtn.disabled = false;
                 domainCheckBtn.innerHTML = old;
