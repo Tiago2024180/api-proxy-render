@@ -155,6 +155,36 @@
 
         <!-- System Architecture Section -->
         <div class="card rounded-2xl p-8 mb-12">
+            <h2 class="text-2xl font-bold mb-6"><i class="fas fa-table mr-3 text-purple-400"></i>Dataset Explorer <span class="text-sm font-normal opacity-70">— Hugging Face Live Data</span></h2>
+            <p class="mb-4 opacity-90">Real-time view of all breach searches recorded in the <a href="https://huggingface.co/datasets/Tiago2024180/eyewebdataset" target="_blank" class="text-purple-300 underline">Hugging Face Dataset</a>. Updated automatically every time a domain is checked.</p>
+            <div class="flex flex-wrap gap-3 mb-4">
+                <button id="loadDatasetBtn" class="bg-purple-600 hover:bg-purple-700 px-5 py-2 rounded-lg font-semibold transition duration-200">
+                    <i class="fas fa-download mr-2"></i>Load Dataset
+                </button>
+                <span id="datasetRowCount" class="px-3 py-2 bg-gray-800 rounded-lg text-sm opacity-80"></span>
+            </div>
+            <div id="datasetTableWrapper" class="overflow-x-auto rounded-xl" style="display:none;">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-purple-900/40 text-purple-200">
+                        <tr>
+                            <th class="px-4 py-3 font-semibold">Domain</th>
+                            <th class="px-4 py-3 font-semibold">Breach</th>
+                            <th class="px-4 py-3 font-semibold">Date</th>
+                            <th class="px-4 py-3 font-semibold text-right">Accounts</th>
+                            <th class="px-4 py-3 font-semibold">Data Exposed</th>
+                            <th class="px-4 py-3 font-semibold">Checked At</th>
+                        </tr>
+                    </thead>
+                    <tbody id="datasetTableBody" class="divide-y divide-gray-700/50"></tbody>
+                </table>
+            </div>
+            <div id="datasetEmpty" class="text-center py-8 opacity-60" style="display:none;">
+                <i class="fas fa-inbox text-3xl mb-2"></i>
+                <p>No records yet. Search a domain above to start recording breach data.</p>
+            </div>
+        </div>
+
+        <div class="card rounded-2xl p-8 mb-12">
             <h2 class="text-2xl font-bold mb-6"><i class="fas fa-project-diagram mr-3"></i>System Architecture</h2>
             <div class="grid md:grid-cols-4 gap-6">
                 <div class="bg-gray-800 p-6 rounded-xl text-center">
@@ -938,6 +968,69 @@
             emailInput.value = 'test@example.com';
             // Don't auto-check to avoid confusion
         }, 1000);
+
+        // ============ Dataset Explorer ============
+        const loadDatasetBtn = document.getElementById('loadDatasetBtn');
+        const datasetTableWrapper = document.getElementById('datasetTableWrapper');
+        const datasetTableBody = document.getElementById('datasetTableBody');
+        const datasetRowCount = document.getElementById('datasetRowCount');
+        const datasetEmpty = document.getElementById('datasetEmpty');
+
+        function formatNumber(n) {
+            if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return String(n);
+        }
+
+        async function loadDatasetExplorer() {
+            loadDatasetBtn.disabled = true;
+            loadDatasetBtn.innerHTML = '<i class="fas fa-spinner animate-spin mr-2"></i>Loading...';
+            datasetTableWrapper.style.display = 'none';
+            datasetEmpty.style.display = 'none';
+
+            try {
+                const res = await fetch(`https://huggingface.co/datasets/Tiago2024180/eyewebdataset/resolve/main/search_history.jsonl?t=${Date.now()}`);
+                if (!res.ok) throw new Error('Failed to fetch JSONL');
+                const text = await res.text();
+                const lines = text.trim().split('\n').filter(Boolean);
+                const rows = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+
+                if (rows.length === 0) {
+                    datasetEmpty.style.display = 'block';
+                    datasetRowCount.textContent = '0 records';
+                    return;
+                }
+
+                // Sort by checkedAt descending
+                rows.sort((a, b) => (b.checkedAt || '').localeCompare(a.checkedAt || ''));
+
+                datasetRowCount.textContent = `${rows.length} records`;
+                datasetTableBody.innerHTML = rows.map(r => {
+                    const date = r.checkedAt ? new Date(r.checkedAt).toLocaleString() : '-';
+                    const desc = (r.description || '').replace(/<[^>]*>/g, '').substring(0, 80);
+                    return `<tr class="hover:bg-white/5 transition">
+                        <td class="px-4 py-2 font-medium text-blue-300">${escapeHtml(r.domain || '')}</td>
+                        <td class="px-4 py-2">${escapeHtml(r.breachTitle || r.breachName || '')}</td>
+                        <td class="px-4 py-2 text-gray-400">${escapeHtml(r.breachDate || '')}</td>
+                        <td class="px-4 py-2 text-right font-mono text-yellow-300">${formatNumber(r.pwnCount || 0)}</td>
+                        <td class="px-4 py-2 text-xs opacity-70 max-w-xs truncate">${escapeHtml(r.dataClasses || '')}</td>
+                        <td class="px-4 py-2 text-xs text-gray-500">${date}</td>
+                    </tr>`;
+                }).join('');
+
+                datasetTableWrapper.style.display = 'block';
+            } catch (e) {
+                datasetRowCount.textContent = 'Error: ' + e.message;
+            } finally {
+                loadDatasetBtn.disabled = false;
+                loadDatasetBtn.innerHTML = '<i class="fas fa-download mr-2"></i>Load Dataset';
+            }
+        }
+
+        loadDatasetBtn.addEventListener('click', loadDatasetExplorer);
+        // Auto-load on page load
+        setTimeout(loadDatasetExplorer, 800);
     </script>
 </body>
 </html>
